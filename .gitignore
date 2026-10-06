@@ -1,0 +1,19 @@
+# build output
+out/
+*.class
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# run logs (final submission logs are added explicitly)
+logs/
+logs_*/
+
+# course PDFs
+*.pdf
+
+# server access info (do not commit)
+ec2.txt
+*.pem
