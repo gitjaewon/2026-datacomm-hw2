@@ -1,0 +1,170 @@
+AllDefinedLogs.txt
+
+로그 형식: [HH:MM:SS.mmm] NODE | EVENT | STATUS | message
+- 시각은 KST (Log.java에서 Asia/Seoul로 고정)
+- NODE: SERVER(Server.txt), CLIENTn(Clientn.txt)
+- (콘솔) 표시는 화면에도 출력되는 로그, 나머지는 파일에만 기록
+
+FAIL 사유
+  INVALID_SEAT     좌석 번호가 1~100 밖
+  BAD_COUNT        다중 예약 좌석 수가 2~4가 아님
+  DUPLICATE_SEAT   다중 예약 좌석 중복
+  BAD_FORMAT       좌석을 숫자로 읽을 수 없음
+  ALREADY_OWNER    이미 내 좌석
+  ALREADY_WAITING  이미 그 좌석 대기열에 있음
+  TAKEN            다중 예약 좌석 중 하나라도 이미 예약됨
+  NOT_OWNER        내 좌석이 아닌데 취소
+  SERVER_ERROR     처리 중 예외 (정상 실행에서는 없음)
+
+
+[SERVER]
+
+INIT | SUCCESS (콘솔)
+  Seat map(100) initialized. Worker pool size=10. queue_capacity=<n> listen=<host>:<port> expected=<clients>x<requests> timezone=Asia/Seoul.
+  서버 시작. 좌석 100개, 큐, Worker 10개, Notifier 생성 후 포트 열림
+
+CONNECT | INFO
+  New TCP connection accepted, waiting for HELLO. open_connections=<n>.
+  새 TCP 연결 수락 (아직 HELLO 전)
+CONNECT | SUCCESS
+  Client<n> connected (<접속 수>/<전체>).
+  HELLO 받고 Client 번호 등록
+CONNECT | SUCCESS (콘솔)
+  All clients connected (30/30).
+CONNECT | INFO
+  Client<n> disconnected after termination signal.
+  BYE 받은 Client가 정상 종료
+CONNECT | WARN (콘솔)
+  Client<n> disconnected (<사유>). active=<n>.
+  실행 중 연결 끊김
+CONNECT | WARN
+  Message before HELLO ignored: "<줄>".
+  Client<n> unknown message ignored: "<줄>".
+  Client<n> request without valid reqId ignored: "<줄>".
+  HELLO with invalid client id ignored.
+  HELLO rejected: Client<n> is invalid or already connected.
+  Request after shutdown ignored: Client<n> req=<r>.
+  잘못된 메시지 무시
+
+RESERVE | INFO
+  Worker#<k> Client<n> req=<r> seat#<s>.
+  Worker가 요청을 꺼냄
+RESERVE | SUCCESS
+  Worker#<k> acquired lock(seat#<s>) first -> seat#<s> assigned to Client<n> (req=<r>).
+  예약 성공. Lock을 기다렸으면 first 대신 "after waiting (contention)"
+RESERVE | FAIL
+  Worker#<k> Client<n> req=<r> seat#<s> rejected: <사유>.
+
+WAITLIST | SUCCESS
+  Worker#<k> seat#<s> already taken by Client<m> -> Client<n> req=<r> registered (pos=<순번>).
+  남의 좌석이라 대기열에 등록 (WAITLISTED 응답)
+
+RESERVE_MULTI | INFO
+  Worker#<k> Client<n> req=<r> seats[<받은 순서>]. Lock order -> [<오름차순>].
+RESERVE_MULTI | SUCCESS
+  Worker#<k> Client<n> req=<r> seats[<오름차순>] assigned (atomic).
+RESERVE_MULTI | FAIL
+  Worker#<k> Client<n> req=<r> rejected: seat#<s> already taken by Client<m> (all-or-nothing, nothing changed).
+  하나라도 차 있어서 전체 실패, 아무것도 안 바뀜
+RESERVE_MULTI | FAIL
+  Worker#<k> Client<n> req=<r> seats[..] rejected before locking: <사유>.
+  Lock 잡기 전 검사에서 실패
+
+LOCK | INFO
+  Worker#<k> waited for lock(seat#<s>) (contention).
+  다중 예약 중 그 좌석 Lock을 기다림
+LOCK | SUCCESS
+  Worker#<k> acquired seat#<a> -> seat#<b> ... (ascending). No deadlock.
+  다중 예약에서 오름차순으로 Lock을 잡은 순서
+
+CANCEL | INFO
+  Worker#<k> Client<n> req=<r> seat#<s>.
+CANCEL | SUCCESS
+  Worker#<k> Client<n> req=<r> canceled seat#<s>. Seat is now EMPTY.
+  대기자 없음
+CANCEL | SUCCESS
+  Worker#<k> Client<n> req=<r> canceled seat#<s>. Assigned to waitlist head Client<m> (req=<w>).
+  대기열 맨 앞 Client에게 바로 넘김
+CANCEL | FAIL
+  Worker#<k> Client<n> req=<r> seat#<s> rejected: <사유>.
+
+<RESERVE/RESERVE_MULTI/CANCEL> | INFO
+  Worker#<k> Client<n> req=<r> malformed request.
+<RESERVE/RESERVE_MULTI/CANCEL> | FAIL
+  Worker#<k> Client<n> req=<r> rejected: BAD_FORMAT.
+
+NOTIFY | SUCCESS
+  Notifier sent NOTIFY to Client<n> req=<r> seat#<s> (waited <초>s).
+  대기자에게 좌석 배정 통지. waited = 대기열 등록부터 NOTIFY 전송까지 (서버 시계)
+NOTIFY | FAIL
+  Notifier could not deliver NOTIFY to Client<n> req=<r> seat#<s> (connection closed).
+
+POOL | INFO (5초마다)
+  queue=<n> max_queue=<n> processed=<n> reserved=<n>/100 waitlist_total=<n> contention=<n> seats=<좌석 현황>
+  seats는 1~100번을 10개씩 끊어 #(예약)/.(빈 좌석)로 표시
+POOL | WARN (콘솔)
+  No progress for <초>s while queue=<n>. Possible deadlock (count=<n>).
+  큐에 요청이 있는데 30초 동안 처리가 없음 (Deadlock 의심 1회)
+
+DOUBLE_BOOKING_CHECK | SUCCESS/FAIL (콘솔)
+  double_booking=<n> assigned=<n> released=<n> reserved_now=<n> balance=OK|MISMATCH
+  이중예약 수, 배정-해제 = 현재 예약 좌석 수 확인
+
+TERMINATE | INFO
+  Shutdown started: <사유>.
+TERMINATE | INFO
+  Final seat map [<a>-<b>]: <좌석>=Client<n>|EMPTY ...
+  최종 좌석 현황 (10석씩 10줄)
+TERMINATE | INFO (안 맞으면 WARN, 콘솔)
+  pending_waitlist=<n> waitlisted=<n> handoffs=<n> notify_sent=<n> notify_failed=<n> waitlist_balance=OK|MISMATCH
+  pending_waitlist = 종료 시 미해결 대기 건수
+TERMINATE | INFO (콘솔)
+  Metrics: processed=<n> elapsed_sec=<초> throughput=<n> max_queue=<n> double_booking=<n> deadlock=<n> avg_waitlist_wait_sec=<초> contention=<n> success=<n> fail=<n> waitlisted=<n>
+TERMINATE | SUCCESS/FAIL
+  Server-side integrity=PASS|FAIL (cross-check with client logs: Verify).
+TERMINATE | SUCCESS (콘솔)
+  Graceful shutdown. Termination signal sent to <n> clients, all threads joined. integrity=PASS|FAIL.
+TERMINATE | WARN (콘솔)
+  Worker#<k> Client<n> req=<r> unexpected error: <예외>
+
+
+[CLIENT]
+
+CONNECT | SUCCESS   Connected to server, HELLO sent.
+CONNECT | FAIL      Cannot connect to server: <오류>          (30번 재시도 후 실패)
+CONNECT | WARN      Send failed, connection lost: <오류>
+CONNECT | WARN      Server closed the connection without termination signal.
+CONNECT | WARN      Receive stopped: <오류>
+CONNECT | WARN      Unknown message from server: "<줄>". / Malformed RESP: "<줄>". / Malformed NOTIFY: "<줄>".
+CONNECT | WARN      RESP for unknown req=<r> ignored.
+
+RESERVE | INFO        req=<r> sent seat#<s>.
+RESERVE_MULTI | INFO  req=<r> sent seats[<보낸 순서>].
+CANCEL | INFO         req=<r> sent seat#<s>.
+  요청 전송 (줄의 시각 = 요청 시각)
+
+<EVENT> | SUCCESS     req=<r> SUCCESS seat#<s>. resp_time=<ms>ms.
+<EVENT> | FAIL        req=<r> FAIL seat#<s> reason=<사유>. resp_time=<ms>ms.
+WAITLIST | WARN       req=<r> WAITLISTED seat#<s>. resp_time=<ms>ms.
+  첫 응답 수신 (줄의 시각 = 응답 시각, resp_time = 전송~첫 응답)
+  다중 예약은 seat#<s> 대신 seats[..]
+
+NOTIFY | SUCCESS      req=<r> seat#<s> assigned from waitlist.
+  대기하던 요청에 좌석 배정됨
+
+TERMINATE | SUCCESS
+  Termination signal received. sent=<n> responded=<n> final_held=[..] success=<n> fail=<n> waitlisted=<n> notified=<n> unresolved=<n> avg_resp_ms=<ms>.
+  BYE 받고 종료. final_held = 최종 보유 좌석, unresolved = NOTIFY 못 받은 대기 건수
+TERMINATE | WARN
+  Connection ended without termination signal. (통계 동일)
+
+
+[예시]
+[16:43:19.293] SERVER | RESERVE | INFO | Worker#2 Client1 req=1 seat#56.
+[16:43:19.346] SERVER | WAITLIST | SUCCESS | Worker#9 seat#3 already taken by Client24 -> Client10 req=1 registered (pos=2).
+[16:43:19.289] SERVER | RESERVE_MULTI | INFO | Worker#4 Client24 req=1 seats[3,9]. Lock order -> [3,9].
+[16:43:19.299] SERVER | LOCK | SUCCESS | Worker#4 acquired seat#3 -> seat#9 (ascending). No deadlock.
+[16:43:19.735] SERVER | CANCEL | SUCCESS | Worker#8 Client5 req=3 canceled seat#4. Assigned to waitlist head Client1 (req=2).
+[16:43:19.738] SERVER | NOTIFY | SUCCESS | Notifier sent NOTIFY to Client1 req=2 seat#4 (waited 0.349s).
+[16:43:19.249] CLIENT1 | WAITLIST | WARN | req=2 WAITLISTED seat#4. resp_time=285ms.
+[16:43:19.599] CLIENT1 | NOTIFY | SUCCESS | req=2 seat#4 assigned from waitlist.
