@@ -13,7 +13,7 @@ import java.util.regex.Pattern;
 // 실행 후 Server.txt, Client1~30.txt로 정합성 확인. 결과는 VerifyResult.txt
 public final class Verify {
     private static final Pattern SEAT_OWNER = Pattern.compile("(\\d+)=(EMPTY|Client(\\d+))");
-    private static final Pattern KEY_NUM = Pattern.compile("([a-z_]+)=([0-9]+(?:\\.[0-9]+)?)");
+    private static final Pattern KEY_NUM = Pattern.compile("([a-z_]+)=(-?[0-9]+(?:\\.[0-9]+)?)");
     private static final Pattern FINAL_HELD = Pattern.compile("final_held=\\[([0-9,]*)]");
 
     private final StringBuilder report = new StringBuilder();
@@ -23,21 +23,27 @@ public final class Verify {
         String dir = "logs";
         int clients = 30;
         int requests = 5000;
-        for (int i = 0; i + 1 < args.length; i += 2) {
+        Arguments.requirePairs(args);
+        for (int i = 0; i < args.length; i += 2) {
             switch (args[i]) {
                 case "--log-dir" -> dir = args[i + 1];
-                case "--requests" -> requests = Integer.parseInt(args[i + 1]);
+                case "--requests" -> requests = Arguments.positiveInt(args[i], args[i + 1]);
                 default -> throw new IllegalArgumentException("Unknown argument: " + args[i]);
             }
         }
-        new Verify().run(Paths.get(dir), clients, requests);
+        if (!new Verify().run(Paths.get(dir), clients, requests)) {
+            System.exit(1);
+        }
     }
 
-    private void run(Path dir, int clients, int requests) throws IOException {
+    boolean run(Path dir, int clients, int requests) throws IOException {
         // Server.txt 읽기
         List<String> serverLines = Files.readAllLines(dir.resolve("Server.txt"), StandardCharsets.UTF_8);
         int[] serverOwner = new int[101];
         int seatsFound = 0;
+        boolean[] seatSeen = new boolean[101];
+        boolean validSeatMap = true;
+        String serverTermination = "";
         Map<String, Double> check = Map.of();
         Map<String, Double> pendingLine = Map.of();
         Map<String, Double> metrics = Map.of();
@@ -46,7 +52,14 @@ public final class Verify {
                 Matcher m = SEAT_OWNER.matcher(line.substring(line.indexOf(':', line.indexOf("Final seat map")) + 1));
                 while (m.find()) {
                     int seat = Integer.parseInt(m.group(1));
-                    serverOwner[seat] = m.group(3) == null ? 0 : Integer.parseInt(m.group(3));
+                    int owner = m.group(3) == null ? 0 : Integer.parseInt(m.group(3));
+                    if (seat < 1 || seat > 100 || seatSeen[seat] || owner < 0 || owner > clients
+                            || (m.group(3) != null && owner == 0)) {
+                        validSeatMap = false;
+                        continue;
+                    }
+                    seatSeen[seat] = true;
+                    serverOwner[seat] = owner;
                     seatsFound++;
                 }
             } else if (line.contains("| DOUBLE_BOOKING_CHECK |")) {
@@ -55,12 +68,19 @@ public final class Verify {
                 pendingLine = keyValues(line);
             } else if (line.contains("Metrics:")) {
                 metrics = keyValues(line);
+            } else if (line.contains("Graceful shutdown.")) {
+                serverTermination = line;
             }
         }
-        if (seatsFound != 100 || check.isEmpty() || pendingLine.isEmpty()) {
-            out("Server.txt has no final report. Check that the server finished with graceful termination.");
+        if (!validSeatMap || seatsFound != 100
+                || !hasNumbers(check, "double_booking", "assigned", "released", "reserved_now")
+                || !hasNumbers(pendingLine, "pending_waitlist", "waitlisted", "handoffs", "notify_sent", "notify_failed")
+                || !hasNumbers(metrics, "processed", "elapsed_sec", "throughput", "max_queue", "double_booking", "deadlock",
+                        "avg_waitlist_wait_sec", "contention", "success", "fail", "waitlisted", "response_failed", "server_errors")) {
+            verdict("Complete and valid server final report", false, "missing/invalid seat map or metrics");
+            out("Final seat integrity = FAIL");
             finish(dir);
-            return;
+            return false;
         }
         int serverReserved = 0;
         for (int s = 1; s <= 100; s++) {
@@ -71,7 +91,7 @@ public final class Verify {
 
         // Client 로그 읽기
         int[] clientOwner = new int[101];
-        long sumHeld = 0, sumWaitlisted = 0, sumNotified = 0, sumSuccess = 0, sumFail = 0, sumResponded = 0;
+        long sumHeld = 0, sumWaitlisted = 0, sumNotified = 0, sumSuccess = 0, sumFail = 0, sumResponded = 0, sumUnresolved = 0;
         double respWeighted = 0;
         boolean everyClientDone = true;
         boolean noSeatInTwoClients = true;
@@ -94,9 +114,14 @@ public final class Verify {
                 continue;
             }
             Map<String, Double> kv = keyValues(term);
+            boolean completeSummary = hasNumbers(kv, "sent", "responded", "success", "fail", "waitlisted",
+                    "notified", "unresolved", "avg_resp_ms", "protocol_errors");
             int responded = kv.getOrDefault("responded", 0.0).intValue();
-            if (kv.getOrDefault("sent", 0.0).intValue() != requests || responded != requests
-                    || !term.contains("Termination signal received")) {
+            if (!completeSummary || kv.getOrDefault("sent", 0.0).intValue() != requests || responded != requests
+                    || !term.contains("| TERMINATE | SUCCESS | Termination signal received.")
+                    || kv.getOrDefault("protocol_errors", -1.0) != 0
+                    || responded != kv.getOrDefault("success", -1.0) + kv.getOrDefault("fail", -1.0) + kv.getOrDefault("waitlisted", -1.0)
+                    || kv.getOrDefault("waitlisted", -1.0) != kv.getOrDefault("notified", -1.0) + kv.getOrDefault("unresolved", -1.0)) {
                 out("  Client" + id + ": missing requests/responses or no termination signal -> " + term);
                 everyClientDone = false;
             }
@@ -105,12 +130,27 @@ public final class Verify {
             sumFail += kv.getOrDefault("fail", 0.0).longValue();
             sumWaitlisted += kv.getOrDefault("waitlisted", 0.0).longValue();
             sumNotified += kv.getOrDefault("notified", 0.0).longValue();
+            sumUnresolved += kv.getOrDefault("unresolved", 0.0).longValue();
             respWeighted += kv.getOrDefault("avg_resp_ms", 0.0) * responded;
 
             Matcher m = FINAL_HELD.matcher(term);
-            if (m.find() && !m.group(1).isEmpty()) {
-                for (String s : m.group(1).split(",")) {
-                    int seat = Integer.parseInt(s);
+            if (!m.find()) {
+                out("  Client" + id + ": missing or malformed final_held");
+                everyClientDone = false;
+            } else if (!m.group(1).isEmpty()) {
+                for (String s : m.group(1).split(",", -1)) {
+                    int seat;
+                    try {
+                        seat = Integer.parseInt(s);
+                    } catch (NumberFormatException e) {
+                        everyClientDone = false;
+                        continue;
+                    }
+                    if (seat < 1 || seat > 100) {
+                        out("  Client" + id + ": invalid final_held seat " + seat);
+                        everyClientDone = false;
+                        continue;
+                    }
                     if (clientOwner[seat] != 0) {
                         out("  seat#" + seat + " is in final_held of both Client" + clientOwner[seat] + " and Client" + id);
                         noSeatInTwoClients = false;
@@ -131,7 +171,8 @@ public final class Verify {
 
         verdict("1. double booking count = 0", doubleBooking == 0,
                 "double_booking=" + doubleBooking);
-        verdict("2. assigned - released = reserved seats at end", assigned - released == serverReserved,
+        verdict("2. assigned - released = reserved seats at end", assigned - released == serverReserved
+                        && check.get("reserved_now").intValue() == serverReserved,
                 assigned + " - " + released + " = " + (assigned - released) + ", reserved " + serverReserved);
 
         int mismatch = 0;
@@ -147,10 +188,27 @@ public final class Verify {
                 mismatch == 0 && noSeatInTwoClients && sumHeld == serverReserved,
                 "mismatched seats " + mismatch + ", clients held " + sumHeld + ", server reserved " + serverReserved);
         verdict("4. WAITLISTED = NOTIFY received + pending waitlist at end",
-                sumWaitlisted == sumNotified + pending && sumWaitlisted == serverWaitlisted,
+                sumWaitlisted == sumNotified + pending && sumWaitlisted == serverWaitlisted && sumUnresolved == pending
+                        && pendingLine.get("notify_sent").longValue() == sumNotified
+                        && pendingLine.get("handoffs").longValue() == sumNotified
+                        && pendingLine.get("notify_failed") == 0,
                 sumWaitlisted + " = " + sumNotified + " + " + pending + " (server WAITLISTED " + serverWaitlisted + ")");
         verdict("5. every client finished all requests and got termination signal", everyClientDone,
                 "first responses " + sumResponded + " / " + (long) clients * requests);
+        verdict("6. server/client response totals agree and server terminated successfully",
+                metrics.get("processed").longValue() == (long) clients * requests
+                        && metrics.get("processed").longValue() == sumResponded
+                        && metrics.get("success").longValue() == sumSuccess
+                        && metrics.get("fail").longValue() == sumFail
+                        && metrics.get("waitlisted").longValue() == sumWaitlisted
+                        && metrics.get("double_booking").longValue() == doubleBooking
+                        && metrics.get("response_failed") == 0 && metrics.get("server_errors") == 0
+                        && serverTermination.contains("| TERMINATE | SUCCESS |")
+                        && serverTermination.contains("Termination signal sent to " + clients + " clients,")
+                        && serverTermination.contains("server_checks=PASS"),
+                "processed=" + metrics.get("processed").longValue());
+        verdict("7. deadlock count = 0", metrics.get("deadlock") == 0,
+                "deadlock=" + metrics.get("deadlock").longValue());
 
         out("");
         out("Final seat integrity = " + (allPass ? "PASS" : "FAIL"));
@@ -173,6 +231,17 @@ public final class Verify {
         out("Final seat integrity             : " + (allPass ? "PASS" : "FAIL"));
 
         finish(dir);
+        return allPass;
+    }
+
+    private static boolean hasNumbers(Map<String, Double> values, String... keys) {
+        for (String key : keys) {
+            Double value = values.get(key);
+            if (value == null || !Double.isFinite(value) || value < 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
     // key=숫자 값 뽑기
