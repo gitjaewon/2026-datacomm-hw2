@@ -169,9 +169,9 @@ public class Listener {
         }
         activeIds.add(id);
         conn.clientId = id;
-        if (Server.startMillis == 0) {  // 처리량 측정 시작
-            Server.startMillis = System.currentTimeMillis();
-            Server.startNanos = System.nanoTime();
+        // HELLO가 늦거나 접속 순서와 다르게 와도 첫 Client의 연결 시각을 사용한다.
+        if (Server.startNanos == 0 || conn.connectedAtNanos < Server.startNanos) {
+            Server.startNanos = conn.connectedAtNanos;
         }
         Server.log.write("CONNECT", "SUCCESS", "Client" + id + " connected (" + activeIds.size() + "/" + Server.expectedClients + ").");
         if (activeIds.size() == Server.expectedClients) {

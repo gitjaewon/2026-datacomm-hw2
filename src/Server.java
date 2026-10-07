@@ -33,8 +33,7 @@ public class Server {
     static final LongAdder deadlockCount = new LongAdder();
     static final LongAdder responseFailed = new LongAdder();
     static final LongAdder serverErrorCount = new LongAdder();
-    static volatile long startMillis;  // 처리량 계산용
-    static volatile long startNanos;
+    static volatile long startNanos;  // 첫 Client의 연결 수락 시각
     static volatile long lastResponseNanos;
 
     public static void main(String[] args) throws Exception {
