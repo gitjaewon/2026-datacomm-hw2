@@ -45,11 +45,13 @@ HW#2 Thread Pool 기반 좌석 예매 서버
   java -cp out ClientMain --host <서버 IP> --port 5000          (로컬)
   java -cp out Verify --log-dir logs                            (끝난 뒤, Server.txt를 logs에 복사)
 
-  --host, --port는 필수이고 없으면 실행 안 됨 (하드코딩 안 함).
-  선택 인자 (기본값이 제출용 설정)
-    Server: --clients 30 --requests 5000 --queue 1000 --pool-sec 5 --deadlock-sec 30 --log-dir logs
-    Client: --clients 30 --id-start 1 --requests 5000 --min-interval-ms 200 --max-interval-ms 1000 --hot-seats 10 --hot-ratio 0.7 --log-dir logs
-  서버는 clients x requests 건에 첫 응답을 다 보내면 종료하므로 테스트할 때는 양쪽 --requests를 같게 줘야 함.
+  인자 (Server, Client 공통)
+    --host      필수. Server는 바인딩 IP, Client는 서버 주소 (하드코딩 안 함, 없으면 실행 안 됨)
+    --port      필수
+    --requests  Client당 요청 수, 기본 5000. 테스트할 때만 줄이고 양쪽에 같은 값을 줘야 함
+                (서버는 30 x requests 건에 첫 응답을 다 보내면 종료함)
+    --log-dir   로그 폴더, 기본 logs
+  나머지(Client 30개, 간격 0.2~1.0초, 큐 1000, POOL 5초, Deadlock 감시 30초, 인기 좌석 1~10번 70%)는 코드에 고정.
   최종 실행은 약 51분 걸림.
 
 
@@ -104,7 +106,8 @@ HW#2 Thread Pool 기반 좌석 예매 서버
   테스트
   - 요청 좌석이 1~10번에 몰리게 해서(실측 약 63%) 같은 좌석 동시 요청을 반복시킴.
     개발 중에는 간격 0~20ms, 인기 좌석 1~5번으로 부하를 더 줘서 여러 번 돌림. 모두 이중예약 0.
-  - Client가 다중 예약 좌석을 정렬 안 하고 보냄. 서버 로그 Lock order / ascending으로 정렬해서 잡는 것 확인. Deadlock 0.
+  - Client가 다중 예약 좌석을 정렬 안 하고 보냄. 서버 LOCK 로그(seats[받은 순서] -> acquired 오름차순)로
+    항상 정렬해서 잡는 것 확인. Deadlock 0.
   - 실행 중 jstack으로 서버 스레드가 Listener 1, Worker 10, Notifier 1뿐인 것 확인.
 
   정합성 확인 (Verify로 Server.txt와 Client1~30.txt를 비교, 결과는 logs/VerifyResult.txt)
