@@ -32,9 +32,11 @@ public class Client implements Runnable {
     final ReentrantLock lock = new ReentrantLock();
     final Condition progress = lock.newCondition();
     final Map<Integer, Pending> pending = new HashMap<>();  // 응답 기다리는 요청
+    final Map<Integer, Integer> waiting = new HashMap<>();  // WAITLISTED를 받은 reqId -> 좌석
+    final Set<Integer> notifiedBeforeResponse = new HashSet<>();
     final TreeSet<Integer> held = new TreeSet<>();  // 내 좌석
     final Set<Integer> cancelling = new HashSet<>();  // 취소 응답 기다리는 좌석
-    int sent, responded, success, fail, waitlisted, notified;
+    int sent, responded, success, fail, waitlisted, notified, protocolErrors;
     long respNanosSum;
     boolean connectionEnded;
     boolean byeReceived;
@@ -72,8 +74,8 @@ public class Client implements Runnable {
                 if (line == null) {
                     break;
                 }
-                sendLine(line);
                 logSent(reqId, line);
+                sendLine(line);
                 Thread.sleep(ClientMain.minIntervalMs + rnd.nextInt(ClientMain.maxIntervalMs - ClientMain.minIntervalMs + 1));
             }
             // 다 보냈으면 응답이 다 올 때까지 기다린 뒤 BYE 대기
@@ -98,14 +100,15 @@ public class Client implements Runnable {
     void connect() throws IOException {
         IOException last = null;
         for (int attempt = 0; attempt < 30; attempt++) {
+            Socket s = new Socket();
             try {
-                Socket s = new Socket();
                 s.setTcpNoDelay(true);
                 s.connect(new InetSocketAddress(ClientMain.host, ClientMain.port), 5000);
                 socket = s;
                 out = s.getOutputStream();
                 return;
             } catch (IOException e) {
+                s.close();
                 last = e;
                 try {
                     Thread.sleep(1000);
@@ -237,21 +240,35 @@ public class Client implements Runnable {
         try {
             reqId = Integer.parseInt(t[1]);
         } catch (RuntimeException e) {
-            log.write("CONNECT", "WARN", "Malformed RESP: \"" + raw + "\".");
+            protocolError("Malformed RESP: \"" + raw + "\".");
             return;
         }
         String result = t.length > 2 ? t[2] : "";
         String reason = t.length > 3 ? t[3] : null;
+        if ((!result.equals("SUCCESS") && !result.equals("FAIL") && !result.equals("WAITLISTED"))
+                || (result.equals("FAIL") ? t.length < 3 || t.length > 4 : t.length != 3)) {
+            protocolError("Malformed RESP: \"" + raw + "\".");
+            return;
+        }
 
         Pending p;
         long rtMs;
         lock.lock();
         try {
-            p = pending.remove(reqId);
+            p = pending.get(reqId);
             if (p == null) {
-                log.write("CONNECT", "WARN", "RESP for unknown req=" + reqId + " ignored.");
+                protocolError("RESP for unknown req=" + reqId + " ignored.");
                 return;
             }
+            if (result.equals("WAITLISTED") && !p.type().equals("RESERVE")) {
+                protocolError("WAITLISTED for non-RESERVE req=" + reqId + " ignored.");
+                return;
+            }
+            if (notifiedBeforeResponse.contains(reqId) && !result.equals("WAITLISTED")) {
+                protocolError("RESP contradicts earlier NOTIFY for req=" + reqId + " ignored.");
+                return;
+            }
+            pending.remove(reqId);
             long rt = System.nanoTime() - p.sentNanos();
             rtMs = rt / 1_000_000;
             respNanosSum += rt;
@@ -269,12 +286,16 @@ public class Client implements Runnable {
                         }
                     }
                 }
-                case "WAITLISTED" -> waitlisted++;
+                case "WAITLISTED" -> {
+                    waitlisted++;
+                    if (!notifiedBeforeResponse.remove(reqId)) {
+                        waiting.put(reqId, first);
+                    }
+                }
                 default -> {
                     fail++;
                     if (p.type().equals("CANCEL")) {
                         cancelling.remove(first);
-                        held.remove(first);
                     }
                 }
             }
@@ -301,18 +322,43 @@ public class Client implements Runnable {
         try {
             reqId = Integer.parseInt(t[1]);
             seat = Integer.parseInt(t[2]);
+            if (t.length != 3 || seat < 1 || seat > SeatManager.SEAT_COUNT) {
+                throw new IllegalArgumentException();
+            }
         } catch (RuntimeException e) {
-            log.write("CONNECT", "WARN", "Malformed NOTIFY: \"" + raw + "\".");
+            protocolError("Malformed NOTIFY: \"" + raw + "\".");
             return;
         }
         lock.lock();
         try {
+            Integer expectedSeat = waiting.get(reqId);
+            Pending firstResponse = pending.get(reqId);
+            if (expectedSeat == null && firstResponse != null && firstResponse.type().equals("RESERVE")) {
+                expectedSeat = firstResponse.seats()[0];
+            }
+            if (expectedSeat == null || expectedSeat != seat || notifiedBeforeResponse.contains(reqId)) {
+                protocolError("Unmatched or duplicate NOTIFY: \"" + raw + "\" ignored.");
+                return;
+            }
+            if (waiting.remove(reqId) == null) {
+                notifiedBeforeResponse.add(reqId);
+            }
             held.add(seat);
             notified++;
         } finally {
             lock.unlock();
         }
         log.write("NOTIFY", "SUCCESS", "req=" + reqId + " seat#" + seat + " assigned from waitlist.");
+    }
+
+    void protocolError(String message) {
+        lock.lock();
+        try {
+            protocolErrors++;
+        } finally {
+            lock.unlock();
+        }
+        log.write("CONNECT", "WARN", message);
     }
 
     void markEnded() {
@@ -336,13 +382,14 @@ public class Client implements Runnable {
         lock.lock();
         try {
             String msg = String.format(
-                    "sent=%d responded=%d final_held=%s success=%d fail=%d waitlisted=%d notified=%d unresolved=%d avg_resp_ms=%.1f",
+                    "sent=%d responded=%d final_held=%s success=%d fail=%d waitlisted=%d notified=%d unresolved=%d avg_resp_ms=%.1f protocol_errors=%d",
                     sent, responded, held.toString().replace(" ", ""), success, fail, waitlisted, notified,
-                    waitlisted - notified, responded == 0 ? 0 : respNanosSum / (double) responded / 1e6);
-            if (byeReceived) {
+                    waiting.size(), responded == 0 ? 0 : respNanosSum / (double) responded / 1e6, protocolErrors);
+            if (byeReceived && sent == ClientMain.requests && responded == sent && protocolErrors == 0) {
                 log.write("TERMINATE", "SUCCESS", "Termination signal received. " + msg + ".");
             } else {
-                log.write("TERMINATE", "WARN", "Connection ended without termination signal. " + msg + ".");
+                log.write("TERMINATE", "WARN", (byeReceived ? "Termination signal received but run incomplete. "
+                        : "Connection ended without termination signal. ") + msg + ".");
             }
         } finally {
             lock.unlock();
