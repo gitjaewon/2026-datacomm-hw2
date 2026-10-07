@@ -49,6 +49,10 @@
  CONNECT | WARN             HELLO with invalid client id ignored.
  CONNECT | WARN             HELLO rejected: Client<n> is invalid or already connected.
  CONNECT | WARN             Request after shutdown ignored: Client<n> req=<r>.
+ CONNECT | WARN             Client<n> duplicate or out-of-range reqId ignored: <r>.
+   -> Client는 1~30, reqId는 1~requests. 실행 중 Client 번호 재사용과 중복 reqId를 허용하지 않음
+ CONNECT | WARN (콘솔)      Worker#<k> Client<n> req=<r> response delivery failed.
+   -> 첫 응답 전송 실패. processed에 포함하지 않고 response_failed 증가
    -> 잘못된 메시지를 무시한 경우 (정상 실행에서는 나오지 않음)
 
 ------------------------------------------------------------------------------
@@ -153,11 +157,13 @@
    -> pending_waitlist = 종료 시 미해결 대기 건수. 숫자가 안 맞으면 WARN으로 화면에도 출력
  TERMINATE | INFO (콘솔)    Metrics: processed=<n> elapsed_sec=<초> throughput=<req/s> max_queue=<n>
                             double_booking=<n> deadlock=<n> avg_waitlist_wait_sec=<초> contention=<n>
-                            success=<n> fail=<n> waitlisted=<n>
+                            success=<n> fail=<n> waitlisted=<n> response_failed=<n> server_errors=<n>
    -> 서버 쪽 성능 지표
- TERMINATE | SUCCESS (콘솔) Graceful shutdown. Termination signal sent to <n> clients, all threads joined.
-                            integrity=PASS|FAIL.
-   -> 서버 마지막 줄. integrity = 이중예약 0 + 배정/해제 균형 + 대기 수지 확인 결과
+ TERMINATE | SUCCESS / FAIL (콘솔)
+   Graceful shutdown. Termination signal sent to <n> clients, all threads joined. server_checks=PASS|FAIL.
+   -> 서버 마지막 줄. 이중예약 0 + 배정/해제 균형 + 대기 수지 + 전체 첫 응답 전송 완료
+      + Deadlock/응답 전송 실패/처리 예외 0건 + Client 30개 BYE 전송을 검사함.
+      Client 로그 대조를 포함하는 최종 좌석 정합성 PASS는 Verify에서 별도로 판정
  TERMINATE | WARN (콘솔)    Worker#<k> Client<n> req=<r> unexpected error: <예외>
    -> 처리 중 예외. 해당 요청은 FAIL(SERVER_ERROR)로 응답하고 계속 진행. 정상이면 안 나옴
 
@@ -177,6 +183,10 @@
  CONNECT | WARN      Unknown message from server: "<줄>".
  CONNECT | WARN      Malformed RESP: "<줄>".  /  Malformed NOTIFY: "<줄>".
  CONNECT | WARN      RESP for unknown req=<r> ignored.
+ CONNECT | WARN      WAITLISTED for non-RESERVE req=<r> ignored.
+ CONNECT | WARN      RESP contradicts earlier NOTIFY for req=<r> ignored.
+ CONNECT | WARN      Unmatched or duplicate NOTIFY: "<줄>" ignored.
+   -> 비정상 RESP/NOTIFY는 요청을 완료하거나 좌석을 바꾸지 않으며 protocol_errors 증가
 
 ------------------------------------------------------------------------------
  요청 전송  (줄의 시각 = 요청 시각)
@@ -205,11 +215,15 @@
 ------------------------------------------------------------------------------
  TERMINATE | SUCCESS
    Termination signal received. sent=<n> responded=<n> final_held=[<최종 보유 좌석>] success=<n> fail=<n>
-   waitlisted=<n> notified=<n> unresolved=<n> avg_resp_ms=<ms>.
-   -> BYE를 받고 종료. unresolved = WAITLISTED를 받았지만 NOTIFY를 못 받은 수 (미해결 대기)
+   waitlisted=<n> notified=<n> unresolved=<n> avg_resp_ms=<ms> protocol_errors=<n>.
+   -> BYE를 받고 모든 첫 응답을 수신했으며 protocol_errors=0일 때 SUCCESS.
+      unresolved = WAITLISTED를 받았지만 NOTIFY를 못 받은 요청 맵 크기 (미해결 대기)
  TERMINATE | WARN
    Connection ended without termination signal. (통계 동일)
    -> BYE 없이 연결이 끝남 (비정상)
+ TERMINATE | WARN
+   Termination signal received but run incomplete. (통계 동일)
+   -> BYE는 받았지만 요청/응답이 누락되었거나 프로토콜 오류가 있음
 
 
 ==============================================================================

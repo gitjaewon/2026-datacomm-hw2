@@ -28,14 +28,19 @@ HW#2 Thread Pool 기반 좌석 예매 서버
   ClientMain.java    Client 30개 실행
   Client.java        Client 1개 (송신 스레드 + 수신 스레드)
   Verify.java        실행 후 로그로 정합성 확인
+  Arguments.java     공통 실행 인자 검사 (필수 주소, 포트 범위, 양수 요청 수)
 
   서버 스레드: Listener 1(main), Worker 10, Notifier 1. 그 외 스레드 없음.
   POOL 로그와 Deadlock 감시는 Listener의 select(500ms) 타임아웃을 이용함.
 
   메시지 형식 (한 줄 = 한 메시지, \n으로 구분)
     Client -> Server: HELLO <id> / RESERVE <reqId> <seat> / RESERVE_MULTI <reqId> <s1,s2,..> / CANCEL <reqId> <seat>
-    Server -> Client: RESP <reqId> SUCCESS|FAIL <사유>|WAITLISTED / NOTIFY <reqId> <seat> / BYE
+    Server -> Client: RESP <reqId> SUCCESS / RESP <reqId> FAIL <사유> / RESP <reqId> WAITLISTED
+                      NOTIFY <reqId> <seat> / BYE
   reqId는 Client가 1부터 붙이고 응답과 NOTIFY에 그대로 들어감. 응답 순서가 섞여도 reqId로 맞춤.
+  Client 번호는 1~30, reqId는 1~requests이며 실행 중 번호 재사용/중복 요청은 무시함.
+  NOTIFY는 단일 RESERVE의 reqId와 좌석이 모두 일치할 때 한 번만 반영함.
+  NOTIFY가 WAITLISTED보다 먼저 와도 좌석 배정은 즉시 반영하고, 나중의 첫 응답과 별도로 집계함.
   TCP는 메시지 경계가 없어서 서버는 받은 데이터를 버퍼에 쌓고 \n마다 한 줄씩 처리함.
 
 
@@ -51,7 +56,11 @@ HW#2 Thread Pool 기반 좌석 예매 서버
     --requests  Client당 요청 수, 기본 5000. 테스트할 때만 줄이고 양쪽에 같은 값을 줘야 함
                 (서버는 30 x requests 건에 첫 응답을 다 보내면 종료함)
     --log-dir   로그 폴더, 기본 logs
-  나머지(Client 30개, 간격 0.2~1.0초, 큐 1000, POOL 5초, Deadlock 감시 30초, 인기 좌석 1~10번 70%)는 코드에 고정.
+    --min-interval-ms  Client 개발용 최소 전송 간격, 기본 200 (양수)
+    --max-interval-ms  Client 개발용 최대 전송 간격, 기본 1000 (최소 이상)
+  host는 빈 값 불가, port는 1~65535, requests는 양수여야 함. 잘못된 인자는 실행 전에 거부함.
+  정식 실행은 간격 인자를 생략해 0.2~1.0초를 사용함.
+  나머지(Client 30개, 큐 1000, POOL 5초, Deadlock 감시 30초, 인기 좌석 1~10번 70%)는 코드에 고정.
   최종 실행은 약 51분 걸림.
 
 
@@ -116,6 +125,10 @@ HW#2 Thread Pool 기반 좌석 예매 서버
     3) 서버 최종 좌석 = Client 30개 최종 보유 좌석 (좌석별로 비교)
     4) WAITLISTED 수 = NOTIFY 수신 수 + 종료 시 미해결 대기 수
     5) 모든 Client가 5,000건 보내고 응답 다 받고 BYE 받음
+    6) 서버 처리 수와 Client 응답별 집계가 일치하고, 응답/통지 전송 실패와 서버 처리 예외가 0건
+    7) Deadlock 0건 및 서버 정상 종료 확인
+  최종 좌석 목록이나 필수 지표가 누락된 로그는 FAIL이며 Verify의 종료 코드는 1임.
+  Server.txt의 server_checks는 서버 내부 검사만 뜻함. Client 대조를 포함한 최종 PASS는 Verify에서 판정함.
   집계 기준: 좌석이 누군가에게 배정될 때마다 배정 +1, CANCEL 성공마다 해제 +1
             (대기자에게 넘기는 경우는 해제 1 + 배정 1)
 
@@ -139,6 +152,12 @@ HW#2 Thread Pool 기반 좌석 예매 서버
      경합 0, PASS, SUCCESS 36.3% / FAIL 45.4% / WAITLISTED 18.2%, 평균 응답 301ms)
   실제 속도(초당 약 50건)에서는 Worker가 동시에 같은 좌석을 잡는 일이 드물어 Lock 경합 수가 작게 나옴.
 
+  회귀 테스트 (Python 표준 라이브러리 + JDK 17 이상)
+    python tests/run_tests.py
+  단일 예약/FIFO/다중 예약 경합, CV 큐 종료, NOTIFY 선행·중복·불일치, CANCEL 실패,
+  응답 전송 실패, 잘못된 인자, Client 30개 TCP 실행 및 손상된 검증 로그를 확인함.
+  테스트 출력은 out/tests/에 저장하며 제출용 정식 원격 로그로 사용하지 않음.
+
 
 10. 직접 정한 것들
   - 큐: 크기 1000, 꽉 차면 Listener 대기. 요청을 버리면 15만 건 응답이 안 맞아서.
@@ -147,6 +166,7 @@ HW#2 Thread Pool 기반 좌석 예매 서버
   - 인기 좌석: 70% 확률로 1~10번. 60%로 했더니 CANCEL 좌석 때문에 전체 비율이 53%라 50%에 너무 가까워서 올림.
   - 다중 예약: 2~4석 랜덤, 겹치지 않게 고르고 정렬 안 한 순서로 보냄.
   - Client 상태: SUCCESS/NOTIFY로 받은 좌석만 보유로 침. 응답 기다리는 요청은 reqId별로 저장.
+    WAITLISTED 대기 요청과 첫 응답 전 NOTIFY를 따로 관리함. CANCEL이 FAIL이면 보유 상태를 유지함.
     취소 응답 기다리는 좌석은 다시 요청 안 함 (두 응답이 반대로 와서 보유 상태가 틀어지는 걸 Verify로 발견해서 막음).
   - 연결 끊김: 재접속 안 함. 중간에 끊기면 그 실행은 무효로 보고 다시 돌림. 전원 끊기면 서버가 알아서 종료.
   - 로그 용량: Server.txt 약 40MB, Client 로그 합 약 26MB. 줄이지 않고 zip으로 압축 (약 7MB).
@@ -159,6 +179,9 @@ HW#2 Thread Pool 기반 좌석 예매 서버
   - Client는 서버보다 먼저 켜도 1초 간격 30번 접속 재시도
   - 이상한 메시지가 와도 서버가 죽지 않고 FAIL 처리, Worker에서 예외가 나도 응답은 보냄
   - Client가 응답을 안 읽어서 송신이 10초 넘게 막히면 연결을 닫음
+    송신 재시도는 Selector의 쓰기 가능 이벤트로 대기함 (sleep 폴링 없음).
+  - 처리량은 실제 첫 응답 전송 성공 건수만 사용함. 전송 실패는 response_failed로 별도 기록하며
+    종료 검사에서 FAIL 처리함. 경과 시간은 각 노드의 System.nanoTime(), 로그 시각은 KST wall-clock 사용.
 
 
 12. 제출물 (G__HW2.zip)
