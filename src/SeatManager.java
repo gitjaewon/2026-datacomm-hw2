@@ -41,7 +41,7 @@ public class SeatManager {
                 r = new Result("FAIL", "ALREADY_WAITING");
             } else {
                 // 대기열에 넣고 바로 응답 (기다리지 않음)
-                seat.waitlist.addLast(new WaitEntry(conn, clientId, reqId, System.currentTimeMillis()));
+                seat.waitlist.addLast(new WaitEntry(conn, clientId, reqId, System.nanoTime()));
                 r = new Result("WAITLISTED", null);
                 r.waitPos = seat.waitlist.size();
                 r.holder = seat.owner;
@@ -190,7 +190,7 @@ public class SeatManager {
     }
 
     // 대기열 항목
-    record WaitEntry(Conn conn, int clientId, int reqId, long registeredAtMillis) {
+    record WaitEntry(Conn conn, int clientId, int reqId, long registeredAtNanos) {
     }
 
     // 처리 결과 (Worker가 로그, 응답에 사용)

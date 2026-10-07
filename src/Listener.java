@@ -20,6 +20,7 @@ public class Listener {
     static ServerSocketChannel serverChannel;
     static final List<Conn> conns = new ArrayList<>();  // 열린 연결
     static final Set<Integer> activeIds = new HashSet<>();  // HELLO 받은 Client 번호
+    static final Set<Integer> registeredIds = new HashSet<>();  // 실행 중 Client 번호 재사용 금지
     static final ByteBuffer readBuf = ByteBuffer.allocate(8192);
     static volatile boolean shutdownRequested;
     static volatile String shutdownReason = "";
@@ -134,12 +135,17 @@ public class Listener {
             Server.log.write("CONNECT", "WARN", conn.name() + " request without valid reqId ignored: \"" + line + "\".");
             return;
         }
+        if (reqId < 1 || reqId > Server.requestsPerClient || conn.seenRequestIds.get(reqId)) {
+            Server.log.write("CONNECT", "WARN", conn.name() + " duplicate or out-of-range reqId ignored: " + reqId + ".");
+            return;
+        }
+        conn.seenRequestIds.set(reqId);
         // 좌석이 숫자가 아니면 null로 넘겨서 FAIL 처리
         int[] seatArr = null;
         if (t.length == 3) {
             try {
                 seatArr = cmd.equals("RESERVE_MULTI")
-                        ? Arrays.stream(t[2].split(",")).mapToInt(Integer::parseInt).toArray()
+                        ? Arrays.stream(t[2].split(",", -1)).mapToInt(Integer::parseInt).toArray()
                         : new int[] {Integer.parseInt(t[2])};
             } catch (NumberFormatException e) {
                 seatArr = null;
@@ -156,13 +162,15 @@ public class Listener {
             Server.log.write("CONNECT", "WARN", "HELLO with invalid client id ignored.");
             return;
         }
-        if (conn.clientId != 0 || id <= 0 || !activeIds.add(id)) {
+        if (t.length != 2 || conn.clientId != 0 || id < 1 || id > Server.expectedClients || !registeredIds.add(id)) {
             Server.log.write("CONNECT", "WARN", "HELLO rejected: Client" + id + " is invalid or already connected.");
             return;
         }
+        activeIds.add(id);
         conn.clientId = id;
         if (Server.startMillis == 0) {  // 처리량 측정 시작
             Server.startMillis = System.currentTimeMillis();
+            Server.startNanos = System.nanoTime();
         }
         Server.log.write("CONNECT", "SUCCESS", "Client" + id + " connected (" + activeIds.size() + "/" + Server.expectedClients + ").");
         if (activeIds.size() == Server.expectedClients) {

@@ -30,8 +30,11 @@ public class Server {
     static final LongAdder failCount = new LongAdder();
     static final LongAdder waitlistedCount = new LongAdder();
     static final LongAdder deadlockCount = new LongAdder();
+    static final LongAdder responseFailed = new LongAdder();
+    static final LongAdder serverErrorCount = new LongAdder();
     static volatile long startMillis;  // 처리량 계산용
-    static volatile long lastResponseMillis;
+    static volatile long startNanos;
+    static volatile long lastResponseNanos;
 
     public static void main(String[] args) throws Exception {
         parseArgs(args);
@@ -75,28 +78,34 @@ public class Server {
         int byeCount = Listener.broadcastBye();
         Listener.waitForClientsToClose(5000);
         Listener.closeAll();
-        log.console("TERMINATE", "SUCCESS", "Graceful shutdown. Termination signal sent to " + byeCount
-                + " clients, all threads joined. integrity=" + (pass ? "PASS" : "FAIL") + ".");
+        boolean complete = pass && byeCount == expectedClients;
+        log.console("TERMINATE", complete ? "SUCCESS" : "FAIL", "Graceful shutdown. Termination signal sent to " + byeCount
+                + " clients, all threads joined. server_checks=" + (complete ? "PASS" : "FAIL") + ".");
         log.close();
     }
 
-    static void parseArgs(String[] args) {
-        if (args.length % 2 != 0) {
-            throw new IllegalArgumentException("Arguments must be --key value pairs.");
+    // 성공적으로 보낸 첫 응답만 집계. 완료 순서가 달라도 마지막 전송 시각은 역행하지 않는다.
+    static synchronized void recordResponse(long sentAtNanos) {
+        lastResponseNanos = Math.max(lastResponseNanos, sentAtNanos);
+        long done = processed.incrementAndGet();
+        if (done == totalExpected) {
+            Listener.requestShutdown("all " + totalExpected + " requests answered");
         }
+    }
+
+    static void parseArgs(String[] args) {
+        Arguments.requirePairs(args);
         for (int i = 0; i < args.length; i += 2) {
             String v = args[i + 1];
             switch (args[i]) {
                 case "--host" -> host = v;
                 case "--port" -> port = Integer.parseInt(v);
-                case "--requests" -> requestsPerClient = Integer.parseInt(v);
+                case "--requests" -> requestsPerClient = Arguments.positiveInt(args[i], v);
                 case "--log-dir" -> logDir = v;
                 default -> throw new IllegalArgumentException("Unknown argument: " + args[i]);
             }
         }
-        if (host == null || port < 0) {
-            throw new IllegalArgumentException("--host and --port are required. e.g. --host 0.0.0.0 --port 5000");
-        }
+        Arguments.requireEndpoint(host, port);
     }
 
     // 최종 좌석 현황, 이중예약 검사, 지표 기록
@@ -138,15 +147,17 @@ public class Server {
         }
 
         long done = processed.get();
-        double elapsedSec = startMillis == 0 ? 0 : Math.max(1, lastResponseMillis - startMillis) / 1000.0;
+        double elapsedSec = startNanos == 0 || done == 0 ? 0 : Math.max(1, lastResponseNanos - startNanos) / 1e9;
         double throughput = elapsedSec == 0 ? 0 : done / elapsedSec;
         double avgWaitSec = notifySent == 0 ? 0 : notifier.waitMillisSum.sum() / (double) notifySent / 1000.0;
         log.console("TERMINATE", "INFO", String.format(
                 "Metrics: processed=%d elapsed_sec=%.1f throughput=%.1f max_queue=%d double_booking=%d deadlock=%d "
-                        + "avg_waitlist_wait_sec=%.3f contention=%d success=%d fail=%d waitlisted=%d",
+                        + "avg_waitlist_wait_sec=%.3f contention=%d success=%d fail=%d waitlisted=%d response_failed=%d server_errors=%d",
                 done, elapsedSec, throughput, requestQueue.maxSize(), db, deadlockCount.sum(),
-                avgWaitSec, SeatManager.contention.sum(), successCount.sum(), failCount.sum(), waitlisted));
+                avgWaitSec, SeatManager.contention.sum(), successCount.sum(), failCount.sum(), waitlisted,
+                responseFailed.sum(), serverErrorCount.sum()));
 
-        return db == 0 && balanceOk && waitlistOk;
+        return db == 0 && balanceOk && waitlistOk && done == totalExpected
+                && deadlockCount.sum() == 0 && responseFailed.sum() == 0 && serverErrorCount.sum() == 0;
     }
 }

@@ -6,8 +6,8 @@ public class ClientMain {
     // 고정 설정
     static final int clientCount = 30;
     static final int idStart = 1;
-    static final int minIntervalMs = 200;
-    static final int maxIntervalMs = 1000;
+    static int minIntervalMs = 200;
+    static int maxIntervalMs = 1000;
     static final int hotSeats = 10;
     static final double hotRatio = 0.7;  // 인기 좌석을 고를 확률
 
@@ -51,21 +51,22 @@ public class ClientMain {
     }
 
     static void parseArgs(String[] args) {
-        if (args.length % 2 != 0) {
-            throw new IllegalArgumentException("Arguments must be --key value pairs.");
-        }
+        Arguments.requirePairs(args);
         for (int i = 0; i < args.length; i += 2) {
             String v = args[i + 1];
             switch (args[i]) {
                 case "--host" -> host = v;
                 case "--port" -> port = Integer.parseInt(v);
-                case "--requests" -> requests = Integer.parseInt(v);
+                case "--requests" -> requests = Arguments.positiveInt(args[i], v);
+                case "--min-interval-ms" -> minIntervalMs = Arguments.positiveInt(args[i], v);
+                case "--max-interval-ms" -> maxIntervalMs = Arguments.positiveInt(args[i], v);
                 case "--log-dir" -> logDir = v;
                 default -> throw new IllegalArgumentException("Unknown argument: " + args[i]);
             }
         }
-        if (host == null || port < 0) {
-            throw new IllegalArgumentException("--host and --port are required. e.g. --host <server IP> --port 5000");
+        Arguments.requireEndpoint(host, port);
+        if (maxIntervalMs < minIntervalMs || maxIntervalMs == Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("Intervals must satisfy 1 <= min <= max < 2147483647.");
         }
     }
 
