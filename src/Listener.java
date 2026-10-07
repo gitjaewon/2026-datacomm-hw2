@@ -213,8 +213,11 @@ public class Listener {
 
         // 5초마다 POOL 로그
         if (now >= nextPoolAt) {
+            SeatManager.Snapshot snap = SeatManager.trySnapshot();
+            if (snap == null) {
+                return; // 다음 select 타임아웃에서 재시도하며 교착 감시는 계속한다.
+            }
             nextPoolAt = now + Server.poolSec * 1000L;
-            SeatManager.Snapshot snap = SeatManager.snapshot();
             Server.log.write("POOL", "INFO", String.format(Locale.ROOT,
                     "queue=%d max_queue=%d processed=%d reserved=%d/%d waitlist_total=%d contention=%d seats=%s",
                     queued, Server.requestQueue.maxSize(), done, snap.reservedCount(), SeatManager.SEAT_COUNT,

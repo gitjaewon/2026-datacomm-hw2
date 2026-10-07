@@ -159,10 +159,25 @@ public class SeatManager {
 
     // 좌석 현황 (POOL 로그, 종료 보고서용)
     static Snapshot snapshot() {
+        return snapshot(false);
+    }
+
+    // 실행 중 상태 조회가 잠금에 막혀 Listener의 감시까지 멈추지 않게 한다.
+    static Snapshot trySnapshot() {
+        return snapshot(true);
+    }
+
+    private static Snapshot snapshot(boolean nonBlocking) {
         int[] owners = new int[SEAT_COUNT + 1];
         int[] waits = new int[SEAT_COUNT + 1];
         for (int n = 1; n <= SEAT_COUNT; n++) {
-            seats[n].lock.lock();
+            if (nonBlocking) {
+                if (!seats[n].lock.tryLock()) {
+                    return null;
+                }
+            } else {
+                seats[n].lock.lock();
+            }
             try {
                 owners[n] = seats[n].owner;
                 waits[n] = seats[n].waitlist.size();
