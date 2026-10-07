@@ -1,4 +1,5 @@
 import java.util.ArrayDeque;
+import java.util.Locale;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
@@ -72,7 +73,7 @@ public class Notifier extends Thread {
             long waitedMs = (System.nanoTime() - e.registeredAtNanos()) / 1_000_000;
             sent.increment();
             waitMillisSum.add(waitedMs);
-            Server.log.write("NOTIFY", "SUCCESS", String.format("Notifier sent NOTIFY to Client%d req=%d seat#%d (waited %.3fs).",
+            Server.log.write("NOTIFY", "SUCCESS", String.format(Locale.ROOT, "Notifier sent NOTIFY to Client%d req=%d seat#%d (waited %.3fs).",
                     e.clientId(), e.reqId(), job.seat(), waitedMs / 1000.0));
         } else {
             failed.increment();

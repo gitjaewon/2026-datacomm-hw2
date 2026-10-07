@@ -11,6 +11,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
@@ -393,7 +394,7 @@ public class Client implements Runnable {
     void logTerminate() {
         lock.lock();
         try {
-            String msg = String.format(
+            String msg = String.format(Locale.ROOT,
                     "sent=%d responded=%d final_held=%s success=%d fail=%d waitlisted=%d notified=%d unresolved=%d avg_resp_ms=%.1f protocol_errors=%d",
                     sent, responded, held.toString().replace(" ", ""), success, fail, waitlisted, notified,
                     waiting.size(), responded == 0 ? 0 : respNanosSum / (double) responded / 1e6, protocolErrors);

@@ -7,6 +7,7 @@ import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -223,18 +224,18 @@ public final class Verify {
         out("");
         // 결과표
         out("===== Result metrics (copy into Readme table) =====");
-        out(String.format( "[Server] throughput               : %.1f req/s", metrics.getOrDefault("throughput", 0.0)));
-        out(String.format( "[Server] max request queue length : %d", metrics.getOrDefault("max_queue", 0.0).longValue()));
-        out(String.format( "[Server] double booking           : %d", doubleBooking));
-        out(String.format( "[Server] deadlock                 : %d", metrics.getOrDefault("deadlock", 0.0).longValue()));
-        out(String.format( "[Server] avg waitlist wait        : %.3f sec", metrics.getOrDefault("avg_waitlist_wait_sec", 0.0)));
-        out(String.format( "[Server] lock contention          : %d", metrics.getOrDefault("contention", 0.0).longValue()));
-        out(String.format( "[Client] total requests answered  : %d", sumResponded));
-        out(String.format( "[Client] SUCCESS                  : %d (%.1f%%)", sumSuccess, pct(sumSuccess, sumResponded)));
-        out(String.format( "[Client] FAIL                     : %d (%.1f%%)", sumFail, pct(sumFail, sumResponded)));
-        out(String.format( "[Client] WAITLISTED               : %d (%.1f%%)", sumWaitlisted, pct(sumWaitlisted, sumResponded)));
-        out(String.format( "[Client] NOTIFY / pending at end   : %d / %d", sumNotified, pending));
-        out(String.format( "[Client] avg response time        : %.1f ms", sumResponded == 0 ? 0 : respWeighted / sumResponded));
+        out(String.format(Locale.ROOT, "[Server] throughput               : %.1f req/s", metrics.getOrDefault("throughput", 0.0)));
+        out(String.format(Locale.ROOT, "[Server] max request queue length : %d", metrics.getOrDefault("max_queue", 0.0).longValue()));
+        out(String.format(Locale.ROOT, "[Server] double booking           : %d", doubleBooking));
+        out(String.format(Locale.ROOT, "[Server] deadlock                 : %d", metrics.getOrDefault("deadlock", 0.0).longValue()));
+        out(String.format(Locale.ROOT, "[Server] avg waitlist wait        : %.3f sec", metrics.getOrDefault("avg_waitlist_wait_sec", 0.0)));
+        out(String.format(Locale.ROOT, "[Server] lock contention          : %d", metrics.getOrDefault("contention", 0.0).longValue()));
+        out(String.format(Locale.ROOT, "[Client] total requests answered  : %d", sumResponded));
+        out(String.format(Locale.ROOT, "[Client] SUCCESS                  : %d (%.1f%%)", sumSuccess, pct(sumSuccess, sumResponded)));
+        out(String.format(Locale.ROOT, "[Client] FAIL                     : %d (%.1f%%)", sumFail, pct(sumFail, sumResponded)));
+        out(String.format(Locale.ROOT, "[Client] WAITLISTED               : %d (%.1f%%)", sumWaitlisted, pct(sumWaitlisted, sumResponded)));
+        out(String.format(Locale.ROOT, "[Client] NOTIFY / pending at end   : %d / %d", sumNotified, pending));
+        out(String.format(Locale.ROOT, "[Client] avg response time        : %.1f ms", sumResponded == 0 ? 0 : respWeighted / sumResponded));
         out("Final seat integrity             : " + (allPass ? "PASS" : "FAIL"));
 
         finish(dir);
