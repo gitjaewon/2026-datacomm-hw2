@@ -11,6 +11,7 @@ import java.util.concurrent.locks.ReentrantLock;
 // 서버 쪽 연결 1개. 여러 스레드가 보낼 수 있어서 sendLock으로 한 번에 하나씩 보낸다
 public class Conn {
     final SocketChannel ch;
+    final long connectedAtNanos;  // Listener가 연결을 수락한 시각 (처리량 측정용)
     final StringBuilder inbox = new StringBuilder();  // 받은 데이터 버퍼 (Listener만 사용)
     final BitSet seenRequestIds = new BitSet();  // Listener만 접근
     volatile int clientId;  // HELLO 받기 전엔 0
@@ -19,6 +20,7 @@ public class Conn {
 
     Conn(SocketChannel ch) {
         this.ch = ch;
+        this.connectedAtNanos = System.nanoTime();
     }
 
     String name() {

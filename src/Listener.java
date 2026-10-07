@@ -169,9 +169,9 @@ public class Listener {
         }
         activeIds.add(id);
         conn.clientId = id;
-        if (Server.startMillis == 0) {  // 처리량 측정 시작
-            Server.startMillis = System.currentTimeMillis();
-            Server.startNanos = System.nanoTime();
+        // HELLO가 늦거나 접속 순서와 다르게 와도 첫 Client의 연결 시각을 사용한다.
+        if (Server.startNanos == 0 || conn.connectedAtNanos < Server.startNanos) {
+            Server.startNanos = conn.connectedAtNanos;
         }
         Server.log.write("CONNECT", "SUCCESS", "Client" + id + " connected (" + activeIds.size() + "/" + Server.expectedClients + ").");
         if (activeIds.size() == Server.expectedClients) {
@@ -213,8 +213,11 @@ public class Listener {
 
         // 5초마다 POOL 로그
         if (now >= nextPoolAt) {
+            SeatManager.Snapshot snap = SeatManager.trySnapshot();
+            if (snap == null) {
+                return; // 다음 select 타임아웃에서 재시도하며 교착 감시는 계속한다.
+            }
             nextPoolAt = now + Server.poolSec * 1000L;
-            SeatManager.Snapshot snap = SeatManager.snapshot();
             Server.log.write("POOL", "INFO", String.format(Locale.ROOT,
                     "queue=%d max_queue=%d processed=%d reserved=%d/%d waitlist_total=%d contention=%d seats=%s",
                     queued, Server.requestQueue.maxSize(), done, snap.reservedCount(), SeatManager.SEAT_COUNT,
