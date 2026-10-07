@@ -5,15 +5,21 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 // 실행 후 Server.txt, Client1~30.txt로 정합성 확인. 결과는 VerifyResult.txt
 public final class Verify {
     private static final Pattern SEAT_OWNER = Pattern.compile("(\\d+)=(EMPTY|Client(\\d+))");
-    private static final Pattern KEY_NUM = Pattern.compile("([a-z_]+)=(-?[0-9]+(?:\\.[0-9]+)?)");
+    private static final Pattern KEY_VALUE = Pattern.compile("(?<!\\S)([a-z_]+)=([^\\s]+)");
+    private static final Pattern INTEGER = Pattern.compile("[0-9]+");
+    private static final Pattern DECIMAL = Pattern.compile("[0-9]+(?:\\.[0-9]+)?");
+    private static final Set<String> DECIMAL_KEYS = Set.of("elapsed_sec", "throughput", "avg_waitlist_wait_sec", "avg_resp_ms");
     private static final Pattern FINAL_HELD = Pattern.compile("final_held=\\[([0-9,]*)]");
 
     private final StringBuilder report = new StringBuilder();
@@ -44,9 +50,9 @@ public final class Verify {
         boolean[] seatSeen = new boolean[101];
         boolean validSeatMap = true;
         String serverTermination = "";
-        Map<String, Double> check = Map.of();
-        Map<String, Double> pendingLine = Map.of();
-        Map<String, Double> metrics = Map.of();
+        Map<String, Number> check = Map.of();
+        Map<String, Number> pendingLine = Map.of();
+        Map<String, Number> metrics = Map.of();
         for (String line : serverLines) {
             if (line.contains("Final seat map")) {
                 Matcher m = SEAT_OWNER.matcher(line.substring(line.indexOf(':', line.indexOf("Final seat map")) + 1));
@@ -113,15 +119,17 @@ public final class Verify {
                 everyClientDone = false;
                 continue;
             }
-            Map<String, Double> kv = keyValues(term);
+            Map<String, Number> kv = keyValues(term);
             boolean completeSummary = hasNumbers(kv, "sent", "responded", "success", "fail", "waitlisted",
                     "notified", "unresolved", "avg_resp_ms", "protocol_errors");
-            int responded = kv.getOrDefault("responded", 0.0).intValue();
-            if (!completeSummary || kv.getOrDefault("sent", 0.0).intValue() != requests || responded != requests
+            long responded = kv.getOrDefault("responded", 0L).longValue();
+            if (!completeSummary || kv.getOrDefault("sent", 0L).longValue() != requests || responded != requests
                     || !term.contains("| TERMINATE | SUCCESS | Termination signal received.")
-                    || kv.getOrDefault("protocol_errors", -1.0) != 0
-                    || responded != kv.getOrDefault("success", -1.0) + kv.getOrDefault("fail", -1.0) + kv.getOrDefault("waitlisted", -1.0)
-                    || kv.getOrDefault("waitlisted", -1.0) != kv.getOrDefault("notified", -1.0) + kv.getOrDefault("unresolved", -1.0)) {
+                    || kv.get("protocol_errors").longValue() != 0
+                    || kv.get("success").longValue() > responded || kv.get("fail").longValue() > responded
+                    || kv.get("waitlisted").longValue() > responded
+                    || responded != kv.get("success").longValue() + kv.get("fail").longValue() + kv.get("waitlisted").longValue()
+                    || kv.get("waitlisted").longValue() != kv.get("notified").longValue() + kv.get("unresolved").longValue()) {
                 out("  Client" + id + ": missing requests/responses or no termination signal -> " + term);
                 everyClientDone = false;
             }
@@ -131,7 +139,7 @@ public final class Verify {
             sumWaitlisted += kv.getOrDefault("waitlisted", 0.0).longValue();
             sumNotified += kv.getOrDefault("notified", 0.0).longValue();
             sumUnresolved += kv.getOrDefault("unresolved", 0.0).longValue();
-            respWeighted += kv.getOrDefault("avg_resp_ms", 0.0) * responded;
+            respWeighted += kv.getOrDefault("avg_resp_ms", 0.0).doubleValue() * responded;
 
             Matcher m = FINAL_HELD.matcher(term);
             if (!m.find()) {
@@ -172,7 +180,7 @@ public final class Verify {
         verdict("1. double booking count = 0", doubleBooking == 0,
                 "double_booking=" + doubleBooking);
         verdict("2. assigned - released = reserved seats at end", assigned - released == serverReserved
-                        && check.get("reserved_now").intValue() == serverReserved,
+                        && check.get("reserved_now").longValue() == serverReserved,
                 assigned + " - " + released + " = " + (assigned - released) + ", reserved " + serverReserved);
 
         int mismatch = 0;
@@ -191,7 +199,7 @@ public final class Verify {
                 sumWaitlisted == sumNotified + pending && sumWaitlisted == serverWaitlisted && sumUnresolved == pending
                         && pendingLine.get("notify_sent").longValue() == sumNotified
                         && pendingLine.get("handoffs").longValue() == sumNotified
-                        && pendingLine.get("notify_failed") == 0,
+                        && pendingLine.get("notify_failed").longValue() == 0,
                 sumWaitlisted + " = " + sumNotified + " + " + pending + " (server WAITLISTED " + serverWaitlisted + ")");
         verdict("5. every client finished all requests and got termination signal", everyClientDone,
                 "first responses " + sumResponded + " / " + (long) clients * requests);
@@ -202,12 +210,12 @@ public final class Verify {
                         && metrics.get("fail").longValue() == sumFail
                         && metrics.get("waitlisted").longValue() == sumWaitlisted
                         && metrics.get("double_booking").longValue() == doubleBooking
-                        && metrics.get("response_failed") == 0 && metrics.get("server_errors") == 0
+                        && metrics.get("response_failed").longValue() == 0 && metrics.get("server_errors").longValue() == 0
                         && serverTermination.contains("| TERMINATE | SUCCESS |")
                         && serverTermination.contains("Termination signal sent to " + clients + " clients,")
                         && serverTermination.contains("server_checks=PASS"),
                 "processed=" + metrics.get("processed").longValue());
-        verdict("7. deadlock count = 0", metrics.get("deadlock") == 0,
+        verdict("7. deadlock count = 0", metrics.get("deadlock").longValue() == 0,
                 "deadlock=" + metrics.get("deadlock").longValue());
 
         out("");
@@ -216,40 +224,60 @@ public final class Verify {
         out("");
         // 결과표
         out("===== Result metrics (copy into Readme table) =====");
-        out(String.format("[Server] throughput               : %.1f req/s", metrics.getOrDefault("throughput", 0.0)));
-        out(String.format("[Server] max request queue length : %d", metrics.getOrDefault("max_queue", 0.0).longValue()));
-        out(String.format("[Server] double booking           : %d", doubleBooking));
-        out(String.format("[Server] deadlock                 : %d", metrics.getOrDefault("deadlock", 0.0).longValue()));
-        out(String.format("[Server] avg waitlist wait        : %.3f sec", metrics.getOrDefault("avg_waitlist_wait_sec", 0.0)));
-        out(String.format("[Server] lock contention          : %d", metrics.getOrDefault("contention", 0.0).longValue()));
-        out(String.format("[Client] total requests answered  : %d", sumResponded));
-        out(String.format("[Client] SUCCESS                  : %d (%.1f%%)", sumSuccess, pct(sumSuccess, sumResponded)));
-        out(String.format("[Client] FAIL                     : %d (%.1f%%)", sumFail, pct(sumFail, sumResponded)));
-        out(String.format("[Client] WAITLISTED               : %d (%.1f%%)", sumWaitlisted, pct(sumWaitlisted, sumResponded)));
-        out(String.format("[Client] NOTIFY / pending at end   : %d / %d", sumNotified, pending));
-        out(String.format("[Client] avg response time        : %.1f ms", sumResponded == 0 ? 0 : respWeighted / sumResponded));
+        out(String.format(Locale.ROOT, "[Server] throughput               : %.1f req/s", metrics.getOrDefault("throughput", 0.0)));
+        out(String.format(Locale.ROOT, "[Server] max request queue length : %d", metrics.getOrDefault("max_queue", 0.0).longValue()));
+        out(String.format(Locale.ROOT, "[Server] double booking           : %d", doubleBooking));
+        out(String.format(Locale.ROOT, "[Server] deadlock                 : %d", metrics.getOrDefault("deadlock", 0.0).longValue()));
+        out(String.format(Locale.ROOT, "[Server] avg waitlist wait        : %.3f sec", metrics.getOrDefault("avg_waitlist_wait_sec", 0.0)));
+        out(String.format(Locale.ROOT, "[Server] lock contention          : %d", metrics.getOrDefault("contention", 0.0).longValue()));
+        out(String.format(Locale.ROOT, "[Client] total requests answered  : %d", sumResponded));
+        out(String.format(Locale.ROOT, "[Client] SUCCESS                  : %d (%.1f%%)", sumSuccess, pct(sumSuccess, sumResponded)));
+        out(String.format(Locale.ROOT, "[Client] FAIL                     : %d (%.1f%%)", sumFail, pct(sumFail, sumResponded)));
+        out(String.format(Locale.ROOT, "[Client] WAITLISTED               : %d (%.1f%%)", sumWaitlisted, pct(sumWaitlisted, sumResponded)));
+        out(String.format(Locale.ROOT, "[Client] NOTIFY / pending at end   : %d / %d", sumNotified, pending));
+        out(String.format(Locale.ROOT, "[Client] avg response time        : %.1f ms", sumResponded == 0 ? 0 : respWeighted / sumResponded));
         out("Final seat integrity             : " + (allPass ? "PASS" : "FAIL"));
 
         finish(dir);
         return allPass;
     }
 
-    private static boolean hasNumbers(Map<String, Double> values, String... keys) {
+    private static boolean hasNumbers(Map<String, Number> values, String... keys) {
         for (String key : keys) {
-            Double value = values.get(key);
-            if (value == null || !Double.isFinite(value) || value < 0) {
+            Number value = values.get(key);
+            if (value == null || !Double.isFinite(value.doubleValue()) || value.doubleValue() < 0) {
                 return false;
             }
         }
         return true;
     }
 
-    // key=숫자 값 뽑기
-    private static Map<String, Double> keyValues(String line) {
-        Map<String, Double> map = new HashMap<>();
-        Matcher m = KEY_NUM.matcher(line);
+    // 토큰 전체를 검사한다. 건수는 Long, 소수 지표는 Double로 읽어 잘라내지 않는다.
+    private static Map<String, Number> keyValues(String line) {
+        Map<String, Number> map = new HashMap<>();
+        Set<String> seen = new HashSet<>();
+        Matcher m = KEY_VALUE.matcher(line);
         while (m.find()) {
-            map.put(m.group(1), Double.parseDouble(m.group(2)));
+            String key = m.group(1);
+            if (!seen.add(key)) {
+                return Map.of();
+            }
+            String token = m.group(2);
+            // Client 종료 문장 맨 끝의 마침표는 숫자에 포함하지 않는다.
+            if (m.end() == line.length() && token.endsWith(".")) {
+                token = token.substring(0, token.length() - 1);
+            }
+            try {
+                if (DECIMAL_KEYS.contains(key)) {
+                    if (DECIMAL.matcher(token).matches()) {
+                        map.put(key, Double.valueOf(token));
+                    }
+                } else if (INTEGER.matcher(token).matches()) {
+                    map.put(key, Long.valueOf(token));
+                }
+            } catch (NumberFormatException e) {
+                // 범위 밖 숫자는 누락된 필수 지표와 똑같이 FAIL 처리한다.
+            }
         }
         return map;
     }

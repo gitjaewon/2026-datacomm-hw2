@@ -1,5 +1,6 @@
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 
@@ -52,7 +53,7 @@ public class Server {
             workers[i] = new Worker(i + 1);
         }
         Listener.openServerSocket();
-        log.console("INIT", "SUCCESS", String.format(
+        log.console("INIT", "SUCCESS", String.format(Locale.ROOT,
                 "Seat map(%d) initialized. Worker pool size=%d. queue_capacity=%d listen=%s:%d expected=%dx%d timezone=%s.",
                 SeatManager.SEAT_COUNT, WORKER_COUNT, queueCapacity, host, port, expectedClients, requestsPerClient,
                 Log.ZONE));
@@ -134,10 +135,10 @@ public class Server {
         int pending = snap.waitlistTotal();
         boolean waitlistOk = waitlisted == handoffs + pending && notifySent == handoffs;
 
-        log.console("DOUBLE_BOOKING_CHECK", db == 0 && balanceOk ? "SUCCESS" : "FAIL", String.format(
+        log.console("DOUBLE_BOOKING_CHECK", db == 0 && balanceOk ? "SUCCESS" : "FAIL", String.format(Locale.ROOT,
                 "double_booking=%d assigned=%d released=%d reserved_now=%d balance=%s",
                 db, assigned, released, reservedNow, balanceOk ? "OK" : "MISMATCH"));
-        String waitlistMsg = String.format(
+        String waitlistMsg = String.format(Locale.ROOT,
                 "pending_waitlist=%d waitlisted=%d handoffs=%d notify_sent=%d notify_failed=%d waitlist_balance=%s",
                 pending, waitlisted, handoffs, notifySent, notifier.failed.sum(), waitlistOk ? "OK" : "MISMATCH");
         if (waitlistOk) {
@@ -150,7 +151,7 @@ public class Server {
         double elapsedSec = startNanos == 0 || done == 0 ? 0 : Math.max(1, lastResponseNanos - startNanos) / 1e9;
         double throughput = elapsedSec == 0 ? 0 : done / elapsedSec;
         double avgWaitSec = notifySent == 0 ? 0 : notifier.waitMillisSum.sum() / (double) notifySent / 1000.0;
-        log.console("TERMINATE", "INFO", String.format(
+        log.console("TERMINATE", "INFO", String.format(Locale.ROOT,
                 "Metrics: processed=%d elapsed_sec=%.1f throughput=%.1f max_queue=%d double_booking=%d deadlock=%d "
                         + "avg_waitlist_wait_sec=%.3f contention=%d success=%d fail=%d waitlisted=%d response_failed=%d server_errors=%d",
                 done, elapsedSec, throughput, requestQueue.maxSize(), db, deadlockCount.sum(),

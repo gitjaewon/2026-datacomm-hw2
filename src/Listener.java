@@ -12,6 +12,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 // 접속 수락, 소켓 감시, 메시지 파싱 후 큐에 넣기 (main 스레드에서 실행)
@@ -214,7 +215,7 @@ public class Listener {
         if (now >= nextPoolAt) {
             nextPoolAt = now + Server.poolSec * 1000L;
             SeatManager.Snapshot snap = SeatManager.snapshot();
-            Server.log.write("POOL", "INFO", String.format(
+            Server.log.write("POOL", "INFO", String.format(Locale.ROOT,
                     "queue=%d max_queue=%d processed=%d reserved=%d/%d waitlist_total=%d contention=%d seats=%s",
                     queued, Server.requestQueue.maxSize(), done, snap.reservedCount(), SeatManager.SEAT_COUNT,
                     snap.waitlistTotal(), SeatManager.contention.sum(), snap.bitmap()));

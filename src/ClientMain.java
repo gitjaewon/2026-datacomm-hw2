@@ -1,5 +1,6 @@
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.Locale;
 
 // Client 30개 실행. 실행: java -cp out ClientMain --host <서버IP> --port 5000
 public class ClientMain {
@@ -27,7 +28,7 @@ public class ClientMain {
             list[i] = new Client(idStart + i);
             threads[i] = new Thread(list[i], "Client" + (idStart + i));
         }
-        System.out.printf("Starting %d clients (Client%d~Client%d) -> %s:%d, %d requests each%n",
+        System.out.printf(Locale.ROOT, "Starting %d clients (Client%d~Client%d) -> %s:%d, %d requests each%n",
                 clientCount, idStart, idStart + clientCount - 1, host, port, requests);
         for (Thread t : threads) {
             t.start();
@@ -43,7 +44,7 @@ public class ClientMain {
                     for (Client c : list) {
                         done += c.respondedSoFar();
                     }
-                    System.out.printf("progress: responded %d / %d%n", done, total);
+                    System.out.printf(Locale.ROOT, "progress: responded %d / %d%n", done, total);
                 }
             }
         }
@@ -92,15 +93,15 @@ public class ClientMain {
             }
         }
         System.out.println("===== Client summary =====");
-        System.out.printf("requests sent       : %d%n", sent);
-        System.out.printf("first responses     : %d%n", responded);
-        System.out.printf("SUCCESS             : %d (%.1f%%)%n", success, pct(success, responded));
-        System.out.printf("FAIL                : %d (%.1f%%)%n", fail, pct(fail, responded));
-        System.out.printf("WAITLISTED          : %d (%.1f%%)%n", waitlisted, pct(waitlisted, responded));
-        System.out.printf("NOTIFY / unresolved : %d / %d%n", notified, waitlisted - notified);
-        System.out.printf("avg response time   : %.1f ms%n", responded == 0 ? 0 : nanos / (double) responded / 1e6);
+        System.out.printf(Locale.ROOT, "requests sent       : %d%n", sent);
+        System.out.printf(Locale.ROOT, "first responses     : %d%n", responded);
+        System.out.printf(Locale.ROOT, "SUCCESS             : %d (%.1f%%)%n", success, pct(success, responded));
+        System.out.printf(Locale.ROOT, "FAIL                : %d (%.1f%%)%n", fail, pct(fail, responded));
+        System.out.printf(Locale.ROOT, "WAITLISTED          : %d (%.1f%%)%n", waitlisted, pct(waitlisted, responded));
+        System.out.printf(Locale.ROOT, "NOTIFY / unresolved : %d / %d%n", notified, waitlisted - notified);
+        System.out.printf(Locale.ROOT, "avg response time   : %.1f ms%n", responded == 0 ? 0 : nanos / (double) responded / 1e6);
         if (noBye > 0) {
-            System.out.printf("WARNING: %d client(s) ended without termination signal%n", noBye);
+            System.out.printf(Locale.ROOT, "WARNING: %d client(s) ended without termination signal%n", noBye);
         }
     }
 

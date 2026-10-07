@@ -29,6 +29,7 @@ public class RegressionTest {
             queueWakeup(conn);
             protocolParsing(conn);
             clientMessages();
+            cancelReassignment(conn);
             failedResponse();
             socketBackpressure();
         } finally {
@@ -191,6 +192,81 @@ public class RegressionTest {
             check(client.pending.containsKey(4) && client.responded == 3, "invalid response does not consume request");
             resp(client, "RESP 4 SUCCESS");
             check(!client.held.contains(42), "successful CANCEL removes ownership");
+        } finally {
+            client.log.close();
+        }
+    }
+
+    private static void cancelReassignment(Conn conn) throws Exception {
+        resetSeats();
+        Client client = new Client(2);
+        try {
+            register(client, 1, "RESERVE", 42);
+            register(client, 2, "RESERVE", 42);
+            SeatManager.reserve(conn, 3, 1, 42);
+            SeatManager.reserve(conn, 2, 1, 42);
+            resp(client, "RESP 1 WAITLISTED");
+            SeatManager.cancel(3, 42);
+            notify(client, "NOTIFY 1 42");
+            client.rnd.setSeed(2);
+            check(client.planAndRegister(3).equals("CANCEL 3 42"), "cancel with an older reservation still pending");
+
+            SeatManager.cancel(2, 42); // CANCEL 응답 전 다른 Worker들이 재배정을 처리한다.
+            SeatManager.reserve(conn, 3, 2, 42);
+            check(SeatManager.reserve(conn, 2, 2, 42).result.equals("WAITLISTED"), "older reserve runs after cancellation");
+            resp(client, "RESP 2 WAITLISTED");
+            SeatManager.cancel(3, 42);
+            notify(client, "NOTIFY 2 42");
+            resp(client, "RESP 3 SUCCESS");
+            check(SeatManager.snapshot().owners()[42] == 2 && client.held.contains(42),
+                    "late successful CANCEL preserves a newer NOTIFY assignment");
+            check(client.protocolErrors == 0 && client.responded == 3 && client.reassignedDuringCancel.isEmpty(),
+                    "valid reordered messages reconcile without protocol errors");
+
+            client.pending.put(4, new Client.Pending("RESERVE_MULTI", new int[]{43, 42}, System.nanoTime()));
+            client.sent++;
+            client.rnd.setSeed(2);
+            check(client.planAndRegister(5).equals("CANCEL 5 42"), "cancel while multi response is pending");
+            SeatManager.cancel(2, 42);
+            check(SeatManager.reserveMulti(2, new int[]{43, 42}).result.equals("SUCCESS"), "multi succeeds after cancellation");
+            resp(client, "RESP 4 SUCCESS");
+            resp(client, "RESP 5 SUCCESS");
+            check(client.held.containsAll(List.of(42, 43)), "late CANCEL also preserves newer multi SUCCESS");
+
+            register(client, 6, "CANCEL", 42);
+            client.cancelling.add(42);
+            SeatManager.cancel(2, 42);
+            resp(client, "RESP 6 SUCCESS");
+            check(!client.held.contains(42), "reassignment flag does not leak into the next cancellation");
+
+            register(client, 7, "RESERVE", 43);
+            client.rnd.setSeed(2);
+            check(client.planAndRegister(8).equals("CANCEL 8 43"), "plan next cancellation");
+            SeatManager.cancel(2, 43);
+            SeatManager.reserve(conn, 3, 3, 43);
+            SeatManager.reserve(conn, 2, 7, 43);
+            resp(client, "RESP 7 WAITLISTED");
+            SeatManager.cancel(3, 43);
+            resp(client, "RESP 8 SUCCESS");
+            notify(client, "NOTIFY 7 43");
+            check(client.held.contains(43) && client.reassignedDuringCancel.isEmpty(),
+                    "NOTIFY after CANCEL response restores ownership normally");
+
+            register(client, 9, "RESERVE", 43);
+            client.rnd.setSeed(2);
+            client.planAndRegister(10);
+            SeatManager.cancel(2, 43);
+            SeatManager.reserve(conn, 3, 4, 43);
+            SeatManager.reserve(conn, 2, 9, 43);
+            SeatManager.cancel(3, 43);
+            notify(client, "NOTIFY 9 43"); // WAITLISTED보다도 먼저 오는 새 배정
+            resp(client, "RESP 10 SUCCESS");
+            resp(client, "RESP 9 WAITLISTED");
+            check(client.held.contains(43) && client.waiting.isEmpty() && client.notifiedBeforeResponse.isEmpty(),
+                    "early NOTIFY remains assigned after the old cancellation response");
+            check(client.cancelling.isEmpty() && client.reassignedDuringCancel.isEmpty()
+                            && client.responded == client.sent && client.protocolErrors == 0,
+                    "reordered cancellation cycles leave no stale client state");
         } finally {
             client.log.close();
         }
