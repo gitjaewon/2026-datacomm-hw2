@@ -9,7 +9,6 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -176,25 +175,54 @@ public class Client implements Runnable {
         }
     }
 
-    // 인기 좌석(1~10) 위주로 고름. 취소 중인 좌석은 제외 (응답 순서가 꼬일 수 있어서)
+    // 단일/다중 예약 모두 같은 가중치로 선택한다.
     int pickSeat() {
-        while (true) {
-            int seat = rnd.nextDouble() < ClientMain.hotRatio
-                    ? 1 + rnd.nextInt(ClientMain.hotSeats)
-                    : ClientMain.hotSeats + 1 + rnd.nextInt(100 - ClientMain.hotSeats);
-            if (!cancelling.contains(seat)) {
-                return seat;
-            }
-        }
+        return pickDistinctSeats(1)[0];
     }
 
-    // 다중 예약용. 정렬 안 하고 보냄
+    // 후보 목록에서 뽑고 제거하므로 중복 재추첨이나 후보 부족으로 무한 반복하지 않는다.
     int[] pickDistinctSeats(int count) {
-        Set<Integer> picked = new LinkedHashSet<>();
-        while (picked.size() < count) {
-            picked.add(pickSeat());
+        if (count < 1 || count > SeatManager.SEAT_COUNT) {
+            throw new IllegalArgumentException("Invalid number of seats: " + count);
         }
-        return picked.stream().mapToInt(Integer::intValue).toArray();
+        List<Integer> candidates = new ArrayList<>();
+        for (int seat = 1; seat <= SeatManager.SEAT_COUNT; seat++) {
+            if (!cancelling.contains(seat)) {
+                candidates.add(seat);
+            }
+        }
+        // 취소 응답이 모두 밀려 있어도 송신은 계속한다.
+        // 취소 중인 좌석의 새 배정은 reassignedDuringCancel로 보존한다.
+        if (candidates.size() < count) {
+            candidates.clear();
+            for (int seat = 1; seat <= SeatManager.SEAT_COUNT; seat++) {
+                candidates.add(seat);
+            }
+        }
+        int[] picked = new int[count];
+        for (int i = 0; i < count; i++) {
+            double totalWeight = 0;
+            for (int seat : candidates) {
+                totalWeight += seatWeight(seat);
+            }
+            double draw = rnd.nextDouble() * totalWeight;
+            int index = candidates.size() - 1;
+            for (int j = 0; j < candidates.size(); j++) {
+                draw -= seatWeight(candidates.get(j));
+                if (draw < 0) {
+                    index = j;
+                    break;
+                }
+            }
+            picked[i] = candidates.remove(index);
+        }
+        return picked;
+    }
+
+    private static double seatWeight(int seat) {
+        return seat <= ClientMain.hotSeats
+                ? ClientMain.hotRatio / ClientMain.hotSeats
+                : (1 - ClientMain.hotRatio) / (SeatManager.SEAT_COUNT - ClientMain.hotSeats);
     }
 
     void awaitAllResponses() throws InterruptedException {
