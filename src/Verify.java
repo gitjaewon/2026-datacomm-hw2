@@ -15,12 +15,12 @@ import java.util.regex.Pattern;
 
 // 실행 후 Server.txt, Client1~30.txt로 정합성 확인. 결과는 VerifyResult.txt
 public final class Verify {
-    private static final Pattern SEAT_OWNER = Pattern.compile("(\\d+)=(EMPTY|Client(\\d+))");
+    private static final Pattern SEAT_OWNER = Pattern.compile("(?<!\\S)(\\d+)=(EMPTY|Client(\\d+))(?=\\s|$)");
     private static final Pattern KEY_VALUE = Pattern.compile("(?<!\\S)([a-z_]+)=([^\\s]+)");
     private static final Pattern INTEGER = Pattern.compile("[0-9]+");
     private static final Pattern DECIMAL = Pattern.compile("[0-9]+(?:\\.[0-9]+)?");
     private static final Set<String> DECIMAL_KEYS = Set.of("elapsed_sec", "throughput", "avg_waitlist_wait_sec", "avg_resp_ms");
-    private static final Pattern FINAL_HELD = Pattern.compile("final_held=\\[([0-9,]*)]");
+    private static final Pattern FINAL_HELD = Pattern.compile("(?<!\\S)final_held=\\[([0-9,]*)](?=\\s|\\.$|$)");
 
     private final StringBuilder report = new StringBuilder();
     private boolean allPass = true;
@@ -57,8 +57,15 @@ public final class Verify {
             if (line.contains("Final seat map")) {
                 Matcher m = SEAT_OWNER.matcher(line.substring(line.indexOf(':', line.indexOf("Final seat map")) + 1));
                 while (m.find()) {
-                    int seat = Integer.parseInt(m.group(1));
-                    int owner = m.group(3) == null ? 0 : Integer.parseInt(m.group(3));
+                    int seat;
+                    int owner;
+                    try {
+                        seat = Integer.parseInt(m.group(1));
+                        owner = m.group(3) == null ? 0 : Integer.parseInt(m.group(3));
+                    } catch (NumberFormatException e) {
+                        validSeatMap = false;
+                        continue;
+                    }
                     if (seat < 1 || seat > 100 || seatSeen[seat] || owner < 0 || owner > clients
                             || (m.group(3) != null && owner == 0)) {
                         validSeatMap = false;

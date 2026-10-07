@@ -104,6 +104,10 @@ mutations = {
     'malformed-last-counter': ('Client1.txt', lambda s: s.replace('protocol_errors=0.', 'protocol_errors=0INVALID.')),
     'comma-decimal-metric': ('Server.txt', lambda s: re.sub(r'throughput=(\d+)\.(\d+)', r'throughput=\1,\2', s)),
     'malformed-decimal-metric': ('Server.txt', lambda s: re.sub(r'throughput=\S+', 'throughput=10INVALID', s)),
+    'invalid-owner-suffix': ('Server.txt', lambda s: re.sub(r'(\d+=(?:EMPTY|Client\d+))(?=\s|$)', r'\1INVALID', s, count=1)),
+    'negative-seat-number': ('Server.txt', lambda s: s.replace('Final seat map [1-10]: 1=', 'Final seat map [1-10]: -1=')),
+    'overflow-seat-number': ('Server.txt', lambda s: s.replace('Final seat map [1-10]: 1=', 'Final seat map [1-10]: 999999999999999999=')),
+    'invalid-final-held-suffix': ('Client1.txt', lambda s: re.sub(r'(final_held=\[[^]]*\])', r'\1INVALID', s)),
 }
 for name, (filename, change) in mutations.items():
     directory = RUN / ('verify-' + name)
