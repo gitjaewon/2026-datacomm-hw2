@@ -10,24 +10,8 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * 부하 테스트가 끝난 뒤 Server.txt 와 Client1.txt ~ ClientN.txt 를 읽어
- * 이중예약 0건과 최종 좌석 정합성(명세 §4-2)을 확인하는 도구.
- *
- * 실행 예:
- *   java -cp out Verify --log-dir logs --clients 30 --requests 5000
- *
- * 확인 항목
- *   1. 서버 이중예약 카운터 = 0
- *   2. 배정 수 − 해제 수 = 종료 시점 예약된 좌석 수 (= 서버 최종 좌석 현황의 예약 좌석 수)
- *   3. 서버 최종 좌석 현황 = 30개 Client의 최종 보유 좌석 목록 (좌석별 owner, 좌석 수 합)
- *      + 한 좌석이 두 Client의 final_held에 동시에 들어 있지 않음
- *   4. 전체 WAITLISTED 응답 수(Client 합) = 전체 NOTIFY 수신 수(Client 합) + 종료 시 미해결 대기 수(서버)
- *   5. 각 Client가 요청을 모두 보내고 첫 응답을 모두 받았는지, 종료 신호를 받았는지
- * 결과는 화면과 log-dir/VerifyResult.txt 에 쓴다.
- */
+// 실행 후 Server.txt, Client1~30.txt로 정합성 확인. 결과는 VerifyResult.txt
 public final class Verify {
-
     private static final Pattern SEAT_OWNER = Pattern.compile("(\\d+)=(EMPTY|Client(\\d+))");
     private static final Pattern KEY_NUM = Pattern.compile("([a-z_]+)=([0-9]+(?:\\.[0-9]+)?)");
     private static final Pattern FINAL_HELD = Pattern.compile("final_held=\\[([0-9,]*)]");
@@ -35,7 +19,6 @@ public final class Verify {
     private final StringBuilder report = new StringBuilder();
     private boolean allPass = true;
 
-    /** 실행 인자(--log-dir, --clients, --requests)를 읽고 검증을 실행한다. */
     public static void main(String[] args) throws IOException {
         String dir = "logs";
         int clients = 30;
@@ -43,7 +26,6 @@ public final class Verify {
         for (int i = 0; i + 1 < args.length; i += 2) {
             switch (args[i]) {
                 case "--log-dir" -> dir = args[i + 1];
-                case "--clients" -> clients = Integer.parseInt(args[i + 1]);
                 case "--requests" -> requests = Integer.parseInt(args[i + 1]);
                 default -> throw new IllegalArgumentException("Unknown argument: " + args[i]);
             }
@@ -51,11 +33,10 @@ public final class Verify {
         new Verify().run(Paths.get(dir), clients, requests);
     }
 
-    /** Server.txt와 Client1~N.txt를 읽어 정합성 5개 항목을 판정하고, Readme용 결과표를 출력한다. */
     private void run(Path dir, int clients, int requests) throws IOException {
-        // ---------------- Server.txt ----------------
+        // Server.txt 읽기
         List<String> serverLines = Files.readAllLines(dir.resolve("Server.txt"), StandardCharsets.UTF_8);
-        int[] serverOwner = new int[101]; // 0 = EMPTY
+        int[] serverOwner = new int[101];
         int seatsFound = 0;
         Map<String, Double> check = Map.of();
         Map<String, Double> pendingLine = Map.of();
@@ -88,7 +69,7 @@ public final class Verify {
             }
         }
 
-        // ---------------- Client1.txt ~ ClientN.txt ----------------
+        // Client 로그 읽기
         int[] clientOwner = new int[101];
         long sumHeld = 0, sumWaitlisted = 0, sumNotified = 0, sumSuccess = 0, sumFail = 0, sumResponded = 0;
         double respWeighted = 0;
@@ -140,7 +121,7 @@ public final class Verify {
             }
         }
 
-        // ---------------- 판정 ----------------
+        // 판정
         out("===== Integrity check =====");
         long doubleBooking = check.getOrDefault("double_booking", -1.0).longValue();
         long assigned = check.getOrDefault("assigned", -1.0).longValue();
@@ -174,8 +155,8 @@ public final class Verify {
         out("");
         out("Final seat integrity = " + (allPass ? "PASS" : "FAIL"));
 
-        // ---------------- Readme용 결과표 (§4-3 형식) ----------------
         out("");
+        // 결과표
         out("===== Result metrics (copy into Readme table) =====");
         out(String.format("[Server] throughput               : %.1f req/s", metrics.getOrDefault("throughput", 0.0)));
         out(String.format("[Server] max request queue length : %d", metrics.getOrDefault("max_queue", 0.0).longValue()));
@@ -194,7 +175,7 @@ public final class Verify {
         finish(dir);
     }
 
-    /** 로그 한 줄에서 key=숫자 쌍을 모두 뽑는다. (예: "assigned=41213 released=41116") */
+    // key=숫자 값 뽑기
     private static Map<String, Double> keyValues(String line) {
         Map<String, Double> map = new HashMap<>();
         Matcher m = KEY_NUM.matcher(line);
@@ -204,7 +185,6 @@ public final class Verify {
         return map;
     }
 
-    /** 항목 하나의 PASS/FAIL을 출력한다. 하나라도 FAIL이면 최종 결과도 FAIL. */
     private void verdict(String title, boolean ok, String detail) {
         if (!ok) {
             allPass = false;
@@ -212,13 +192,11 @@ public final class Verify {
         out((ok ? "[PASS] " : "[FAIL] ") + title + "  (" + detail + ")");
     }
 
-    /** 화면에 출력하고, VerifyResult.txt에 쓸 내용으로도 모아 둔다. */
     private void out(String s) {
         System.out.println(s);
         report.append(s).append('\n');
     }
 
-    /** 모아 둔 결과를 log-dir/VerifyResult.txt로 저장한다. */
     private void finish(Path dir) throws IOException {
         try (PrintWriter w = new PrintWriter(Files.newBufferedWriter(dir.resolve("VerifyResult.txt"),
                 StandardCharsets.UTF_8))) {
@@ -226,12 +204,10 @@ public final class Verify {
         }
     }
 
-    /** owner 번호 → "ClientN" (0이면 "EMPTY"). */
     private static String name(int owner) {
         return owner == 0 ? "EMPTY" : "Client" + owner;
     }
 
-    /** 백분율 계산 (whole이 0이면 0). */
     private static double pct(long part, long whole) {
         return whole == 0 ? 0 : part * 100.0 / whole;
     }

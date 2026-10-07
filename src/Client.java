@@ -18,64 +18,36 @@ import java.util.TreeSet;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
-/**
- * Client 1개. 서버와 독립된 TCP 연결 1개를 유지한다. (실행은 ClientMain이 30개를 띄운다)
- *
- * Client 1개는 스레드 2개로 동작한다 (Client 쪽은 스레드 제한 없음)
- *   송신 스레드 : 0.2~1.0초 간격으로 요청을 보낸다. 응답을 기다리지 않고 다음 요청을 보낸다.
- *   수신 스레드 : RESP / NOTIFY / BYE를 받아 상태를 갱신하고 ClientN.txt에 기록한다.
- *
- * 요청 1건의 '처리 완료' = 첫 응답(SUCCESS/FAIL/WAITLISTED) 수신. WAITLISTED 뒤의 NOTIFY는 별도 이벤트.
- * NOTIFY가 WAITLISTED보다 먼저 와도 요청 번호(reqId)로 매칭하므로 문제없다.
- */
+// Client 1개. 송신 스레드(run)와 수신 스레드(receiveLoop)로 동작
 public class Client implements Runnable {
-
-    static final int MANY_SEATS = 5; // 보유 좌석이 이 이상이면 CANCEL을 우선 (좌석 고갈 방지)
-
-    // =====================================================================
-    // Client 1개의 상태
-    //
-    //  held       : 확실히 내 것인 좌석 (SUCCESS 또는 NOTIFY로 받음). CANCEL은 여기서만 고른다.
-    //  cancelling : CANCEL을 보냈지만 아직 응답이 없는 좌석 → 다시 취소하거나 다시 예약하지 않는다 (pickSeat 참고).
-    //  응답이 아직 안 온 예약 좌석은 held에 넣지 않는다 (내 것인지 아직 모르므로).
-    //  송신/수신 두 스레드가 같이 쓰므로 모두 lock으로 보호한다.
-    // =====================================================================
+    static final int MANY_SEATS = 5;  // 보유 좌석이 이만큼 되면 취소 위주
 
     final int id;
     final Log log;
     final Random rnd = new Random();
     Socket socket;
-    OutputStream out; // 송신 스레드만 쓴다
+    OutputStream out;
 
+    // 아래 상태는 송신/수신 스레드가 같이 쓰므로 lock으로 보호
     final ReentrantLock lock = new ReentrantLock();
     final Condition progress = lock.newCondition();
-    final Map<Integer, Pending> pending = new HashMap<>(); // 첫 응답을 기다리는 요청 (reqId → 정보)
-    final TreeSet<Integer> held = new TreeSet<>();
-    final Set<Integer> cancelling = new HashSet<>();
+    final Map<Integer, Pending> pending = new HashMap<>();  // 응답 기다리는 요청
+    final TreeSet<Integer> held = new TreeSet<>();  // 내 좌석
+    final Set<Integer> cancelling = new HashSet<>();  // 취소 응답 기다리는 좌석
     int sent, responded, success, fail, waitlisted, notified;
     long respNanosSum;
-    boolean connectionEnded; // 수신 스레드가 끝났는지 (BYE 또는 연결 끊김)
+    boolean connectionEnded;
     boolean byeReceived;
 
-    /** 첫 응답을 기다리는 요청 정보 */
+    // 보낸 요청 정보
     record Pending(String type, int[] seats, long sentNanos) {
     }
 
-    /** Client 1개를 만든다. 자기 로그 파일(ClientN.txt)만 열고, 서버 접속은 run()에서 한다. */
     Client(int id) throws IOException {
         this.id = id;
         this.log = new Log("CLIENT" + id, Paths.get(ClientMain.logDir, "Client" + id + ".txt"));
     }
 
-    // =====================================================================
-    // 송신 스레드
-    // =====================================================================
-
-    /**
-     * 송신 스레드 본체 (Client 1개의 전체 흐름).
-     * 접속 → HELLO → 요청 N건을 0.2~1.0초 간격으로 전송 → 첫 응답을 모두 받을 때까지 대기
-     * → 서버 종료 신호(BYE)까지 연결 유지 → 종료 로그(최종 보유 좌석) 기록.
-     */
     @Override
     public void run() {
         try {
@@ -87,6 +59,7 @@ public class Client implements Runnable {
             log.close();
             return;
         }
+        // 수신 스레드 시작
         Thread receiver = new Thread(this::receiveLoop, "Client" + id + "-recv");
         receiver.start();
 
@@ -95,17 +68,16 @@ public class Client implements Runnable {
             log.write("CONNECT", "SUCCESS", "Connected to server, HELLO sent.");
 
             for (int reqId = 1; reqId <= ClientMain.requests; reqId++) {
-                String line = planAndRegister(reqId); // 다음 요청을 고르고 pending에 먼저 등록
+                String line = planAndRegister(reqId);  // 보내기 전에 pending에 먼저 등록
                 if (line == null) {
-                    break; // 연결이 이미 끊김
+                    break;
                 }
                 sendLine(line);
                 logSent(reqId, line);
                 Thread.sleep(ClientMain.minIntervalMs + rnd.nextInt(ClientMain.maxIntervalMs - ClientMain.minIntervalMs + 1));
             }
-            // 모두 보냈으면 첫 응답을 전부 받을 때까지 기다린다
+            // 다 보냈으면 응답이 다 올 때까지 기다린 뒤 BYE 대기
             awaitAllResponses();
-            // 그 뒤 서버 종료 신호(BYE)까지 연결 유지 (그동안 오는 NOTIFY도 수신 스레드가 기록)
             receiver.join();
         } catch (IOException e) {
             log.write("CONNECT", "WARN", "Send failed, connection lost: " + e.getMessage());
@@ -116,14 +88,13 @@ public class Client implements Runnable {
                 socket.close();
                 receiver.join(2000);
             } catch (IOException | InterruptedException ignored) {
-                // 종료 중
             }
             logTerminate();
             log.close();
         }
     }
 
-    /** 서버가 늦게 떠도 되도록 1초 간격으로 최대 30번 접속 시도 */
+    // 서버가 늦게 켜질 수 있어서 30번까지 재시도
     void connect() throws IOException {
         IOException last = null;
         for (int attempt = 0; attempt < 30; attempt++) {
@@ -146,23 +117,12 @@ public class Client implements Runnable {
         throw last;
     }
 
-    /** 서버로 메시지 한 줄을 보낸다 (끝에 줄바꿈을 붙임). 송신 스레드만 부르므로 Lock이 필요 없다. */
     void sendLine(String line) throws IOException {
         out.write((line + "\n").getBytes(StandardCharsets.UTF_8));
         out.flush();
     }
 
-    /**
-     * 다음 요청을 고르고, 보내기 "전에" pending에 등록한다.
-     * (먼저 보내고 나중에 등록하면 응답이 등록보다 먼저 도착해 매칭에 실패할 수 있다)
-     *
-     * 요청 비율 (명세 참고 권장안)
-     *   보유 좌석 없음 : RESERVE 60% / RESERVE_MULTI 40%
-     *   보유 좌석 있음 : RESERVE 30% / RESERVE_MULTI 20% / CANCEL 50%
-     *   보유 좌석 MANY_SEATS개 이상 : CANCEL 우선
-     *
-     * @return 보낼 메시지. 연결이 끊겼으면 null
-     */
+    // 좌석 없으면 RESERVE 60 / MULTI 40, 있으면 30 / 20 / CANCEL 50
     String planAndRegister(int reqId) {
         lock.lock();
         try {
@@ -195,7 +155,7 @@ public class Client implements Runnable {
                     line = "CANCEL " + reqId + " " + seat;
                 }
                 case "RESERVE_MULTI" -> {
-                    seats = pickDistinctSeats(2 + rnd.nextInt(3)); // 2~4석, 무작위 순서 그대로 보냄
+                    seats = pickDistinctSeats(2 + rnd.nextInt(3));
                     line = "RESERVE_MULTI " + reqId + " " + joinSeats(seats);
                 }
                 default -> {
@@ -211,15 +171,7 @@ public class Client implements Runnable {
         }
     }
 
-    /**
-     * hotRatio 확률로 인기 좌석(1~hotSeats), 나머지는 그 밖의 좌석. lock 안에서 호출.
-     *
-     * 단, CANCEL 응답을 아직 못 받은 좌석(cancelling)은 고르지 않는다.
-     * 예) CANCEL 72 를 보내고 곧바로 RESERVE_MULTI [72,64] 를 보내면, 서버에서는 둘 다 성공할 수 있는데
-     *     두 응답을 서로 다른 Worker가 보내므로 MULTI SUCCESS가 먼저, CANCEL SUCCESS가 나중에 도착할 수 있다.
-     *     그러면 Client는 "72 추가 → 72 삭제" 순으로 처리해 실제로는 갖고 있는 좌석을 잃어버린 것으로 착각한다.
-     *     취소 중인 좌석을 다시 요청하지 않으면 같은 좌석의 "추가"와 "삭제"가 동시에 진행될 일이 없다.
-     */
+    // 인기 좌석(1~10) 위주로 고름. 취소 중인 좌석은 제외 (응답 순서가 꼬일 수 있어서)
     int pickSeat() {
         while (true) {
             int seat = rnd.nextDouble() < ClientMain.hotRatio
@@ -231,10 +183,7 @@ public class Client implements Runnable {
         }
     }
 
-    /**
-     * RESERVE_MULTI용으로 서로 다른 좌석 count개를 고른다.
-     * 정렬하지 않고 뽑힌 순서 그대로 보낸다 → 서버가 직접 오름차순 정렬(Lock Ordering)하는지 확인하는 용도.
-     */
+    // 다중 예약용. 정렬 안 하고 보냄
     int[] pickDistinctSeats(int count) {
         Set<Integer> picked = new LinkedHashSet<>();
         while (picked.size() < count) {
@@ -243,10 +192,6 @@ public class Client implements Runnable {
         return picked.stream().mapToInt(Integer::intValue).toArray();
     }
 
-    /**
-     * 보낸 요청의 첫 응답을 전부 받을 때까지 Condition Variable에서 기다린다.
-     * 연결이 끊기면(connectionEnded) 바로 빠져나온다.
-     */
     void awaitAllResponses() throws InterruptedException {
         lock.lock();
         try {
@@ -258,16 +203,8 @@ public class Client implements Runnable {
         }
     }
 
-    // =====================================================================
-    // 수신 스레드
-    // =====================================================================
-
-    /**
-     * 수신 스레드 본체. 서버 메시지를 한 줄씩 읽어 종류별로 나눈다.
-     * RESP → onResp(), NOTIFY → onNotify(), BYE → 수신 종료.
-     */
+    // 서버 메시지 받기 (RESP / NOTIFY / BYE)
     void receiveLoop() {
-        // readLine()이 '\n' 단위로 잘라 주므로 메시지가 붙어 오거나 나뉘어 와도 한 줄씩 정확히 받는다
         try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = in.readLine()) != null) {
@@ -295,7 +232,6 @@ public class Client implements Runnable {
         }
     }
 
-    /** RESP <reqId> <result> [reason] */
     void onResp(String[] t, String raw) {
         int reqId;
         try {
@@ -337,14 +273,14 @@ public class Client implements Runnable {
                 default -> {
                     fail++;
                     if (p.type().equals("CANCEL")) {
-                        // 취소 실패 = 서버 기준으로 내 좌석이 아님 → 내 상태를 서버에 맞춘다
                         cancelling.remove(first);
                         held.remove(first);
                     }
                 }
             }
+            // 다 받았으면 송신 스레드 깨움
             if (responded >= sent) {
-                progress.signalAll(); // 다 받기를 기다리는 송신 스레드를 깨운다
+                progress.signalAll();
             }
         } finally {
             lock.unlock();
@@ -358,7 +294,7 @@ public class Client implements Runnable {
         }
     }
 
-    /** NOTIFY <reqId> <seat>: Waitlist에 있던 요청에 좌석이 배정됨 */
+    // 대기하던 좌석을 받음
     void onNotify(String[] t, String raw) {
         int reqId;
         int seat;
@@ -379,7 +315,6 @@ public class Client implements Runnable {
         log.write("NOTIFY", "SUCCESS", "req=" + reqId + " seat#" + seat + " assigned from waitlist.");
     }
 
-    /** 수신이 끝났음(BYE 또는 연결 끊김)을 표시하고, 응답을 기다리며 자고 있는 송신 스레드를 깨운다. */
     void markEnded() {
         lock.lock();
         try {
@@ -390,21 +325,13 @@ public class Client implements Runnable {
         }
     }
 
-    // =====================================================================
-    // 로그
-    // =====================================================================
-
-    /** 요청을 보낸 직후 ClientN.txt에 "req=.. sent .." 를 기록한다. */
     void logSent(int reqId, String line) {
         String[] t = line.split(" ");
         String what = t[0].equals("RESERVE_MULTI") ? "seats[" + t[2] + "]" : "seat#" + t[2];
         log.write(t[0], "INFO", "req=" + reqId + " sent " + what + ".");
     }
 
-    /**
-     * 종료 로그. final_held(최종 보유 좌석)는 Verify.java가 서버 최종 좌석 현황과 대조한다.
-     * unresolved = WAITLISTED를 받았지만 NOTIFY를 못 받은 수 (종료 시 미해결 대기)
-     */
+    // 종료 로그 (final_held = 최종 보유 좌석)
     void logTerminate() {
         lock.lock();
         try {
@@ -422,7 +349,6 @@ public class Client implements Runnable {
         }
     }
 
-    /** 지금까지 받은 첫 응답 수. main의 10초 진행률 출력에 쓴다. */
     int respondedSoFar() {
         lock.lock();
         try {
@@ -432,7 +358,6 @@ public class Client implements Runnable {
         }
     }
 
-    /** {5,3} → "5,3" (메시지·로그용). */
     static String joinSeats(int[] seats) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < seats.length; i++) {
