@@ -3,7 +3,7 @@
   이름 / 학번 / 역할
   김재원 / 20213086 / Server·Listener, RequestQueue·Worker, 원격 배포, 영상
   윤도훈 / 20223122 / Client·ClientMain, 로그, Verify
-  김지현 / 20223097 / SeatManager, Notifier
+  김치헌 / 20223097 / SeatManager, Notifier
 
 
 2. 배포 정보
@@ -121,17 +121,18 @@
     NOTIFY / 미해결           18,408 건 / 241 건
     평균 응답 시간            283.9 ms
 
-  초당 약 50건에서는 Worker가 같은 좌석 Lock을 동시에 잡는 일이 드물어 Lock 경합 수가 작게 나옴.
 
 
 10. 직접 정한 것들
-  - Request Queue 크기 1000. 꽉 차면 Listener가 대기하고 요청은 버리지 않음 (버리면 150,000건 집계가 안 맞음).
+  - Request Queue 크기 1000. 꽉 차면 Listener가 대기하고 요청은 버리지 않음.
   - 요청 비율 (%)
       보유 좌석 0개:    RESERVE 60, RESERVE_MULTI 40 (취소할 좌석이 없으므로)
       보유 좌석 1~4개:  RESERVE 30, RESERVE_MULTI 20, CANCEL 50
       보유 좌석 5개 이상: CANCEL 100 (한 Client에 좌석이 쌓이는 것 방지)
   - 인기 좌석: 70% 확률로 1~10번. 60%일 때는 CANCEL 영향으로 실제 비율이 약 53%라 올림.
   - RESERVE_MULTI: 2~4석을 중복 없이 고르고 정렬 안 한 순서로 보냄 (정렬은 Server가 함).
+  - Client 스레드: 송신·수신 스레드를 분리. 응답을 기다리지 않고 계속 보내고, NOTIFY도 따로 받기 위해.
+  - 메시지 구분: TCP는 메시지 경계가 없어서, Server는 받은 데이터를 버퍼에 쌓고 \n 단위로 잘라 한 줄씩 처리.
   - Client 보유 좌석은 SUCCESS나 NOTIFY를 받은 좌석만. CANCEL이 FAIL이면 보유 유지.
     CANCEL 응답을 기다리는 좌석에는 새 요청을 안 보냄 (응답 순서가 뒤바뀌는 문제를 Verify로 발견해 추가).
   - 연결: 처음 접속 시 1초 간격 최대 30번 재시도. 실행 중 끊기면 재접속 안 하고 그 실행은 무효.
