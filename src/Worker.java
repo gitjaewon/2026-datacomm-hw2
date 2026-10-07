@@ -16,6 +16,7 @@ public class Worker extends Thread {
             try {
                 req = Server.requestQueue.take();  // 큐가 비어 있으면 대기
             } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
                 return;
             }
             // 큐가 닫힘 (서버 종료)
@@ -35,6 +36,7 @@ public class Worker extends Thread {
         } catch (RuntimeException e) {
             // 예외가 나도 응답은 보냄
             Server.log.console("TERMINATE", "WARN", who + " unexpected error: " + e);
+            Server.serverErrorCount.increment();
             r = new SeatManager.Result("FAIL", "SERVER_ERROR");
         }
 
@@ -43,7 +45,12 @@ public class Worker extends Thread {
         if (r.notifyJob != null) {
             Server.notifier.enqueue(r.notifyJob);  // NOTIFY는 Notifier가 보냄
         }
-        req.conn().send("RESP " + req.reqId() + " " + r.result + (r.reason == null ? "" : " " + r.reason));
+        if (!req.conn().send("RESP " + req.reqId() + " " + r.result + (r.reason == null ? "" : " " + r.reason))) {
+            Server.responseFailed.increment();
+            Server.log.console("CONNECT", "WARN", who + " response delivery failed.");
+            return;
+        }
+        long sentAtNanos = System.nanoTime();
         switch (r.result) {
             case "SUCCESS" -> Server.successCount.increment();
             case "WAITLISTED" -> Server.waitlistedCount.increment();
@@ -51,29 +58,26 @@ public class Worker extends Thread {
         }
 
         // 마지막 요청이면 종료 요청
-        long done = Server.processed.incrementAndGet();
-        Server.lastResponseMillis = System.currentTimeMillis();
-        if (done == Server.totalExpected) {
-            Listener.requestShutdown("all " + Server.totalExpected + " requests answered");
-        }
+        Server.recordResponse(sentAtNanos);
     }
 
     private SeatManager.Result judge(RequestQueue.Request req) {
         int[] s = req.seats();
-        if (s == null) {
+        if (s == null || (!req.type().equals("RESERVE_MULTI") && s.length != 1)) {
             return new SeatManager.Result("FAIL", "BAD_FORMAT");
         }
         return switch (req.type()) {
             case "RESERVE" -> SeatManager.reserve(req.conn(), req.clientId(), req.reqId(), s[0]);
             case "RESERVE_MULTI" -> SeatManager.reserveMulti(req.clientId(), s);
-            default -> SeatManager.cancel(req.clientId(), s[0]);
+            case "CANCEL" -> SeatManager.cancel(req.clientId(), s[0]);
+            default -> new SeatManager.Result("FAIL", "BAD_FORMAT");
         };
     }
 
     private void logResult(RequestQueue.Request req, SeatManager.Result r, String who) {
         Log log = Server.log;
         String type = req.type();
-        if (req.seats() == null) {
+        if (req.seats() == null || req.seats().length == 0) {
             log.write(type, "FAIL", who + " rejected: " + r.reason + ".");
             return;
         }

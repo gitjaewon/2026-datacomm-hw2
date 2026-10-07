@@ -68,8 +68,8 @@ public class Notifier extends Thread {
 
     private void deliver(Job job) {
         SeatManager.WaitEntry e = job.entry();
-        long waitedMs = System.currentTimeMillis() - e.registeredAtMillis();
         if (e.conn().send("NOTIFY " + e.reqId() + " " + job.seat())) {
+            long waitedMs = (System.nanoTime() - e.registeredAtNanos()) / 1_000_000;
             sent.increment();
             waitMillisSum.add(waitedMs);
             Server.log.write("NOTIFY", "SUCCESS", String.format("Notifier sent NOTIFY to Client%d req=%d seat#%d (waited %.3fs).",
