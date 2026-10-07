@@ -30,6 +30,9 @@ public class RegressionTest {
             protocolParsing(conn);
             clientMessages();
             cancelReassignment(conn);
+            saturatedCancellations(conn);
+            nonBlockingPoolMonitor();
+            connectionTiming();
             failedResponse();
             socketBackpressure();
         } finally {
@@ -270,6 +273,118 @@ public class RegressionTest {
         } finally {
             client.log.close();
         }
+    }
+
+    private static void saturatedCancellations(Conn conn) throws Exception {
+        resetSeats();
+        Client client = new Client(3);
+        try {
+            for (int seat = 1; seat <= SeatManager.SEAT_COUNT; seat++) {
+                SeatManager.reserve(conn, 3, seat, seat);
+                client.held.add(seat);
+            }
+            // 취소는 서버에서 처리됐지만 첫 응답 100개가 아직 도착하지 않은 상황.
+            for (int reqId = 1; reqId <= SeatManager.SEAT_COUNT; reqId++) {
+                client.rnd.setSeed(2);
+                client.planAndRegister(reqId);
+                Client.Pending cancel = client.pending.get(reqId);
+                check(cancel.type().equals("CANCEL"), "plan cancellation of a confirmed owned seat");
+                SeatManager.cancel(3, cancel.seats()[0]);
+            }
+            client.rnd.setSeed(0);
+            runBounded(() -> client.planAndRegister(101), "sender continues when every seat is awaiting CANCEL response");
+            Client.Pending reservation = client.pending.get(101);
+            check(reservation.type().equals("RESERVE_MULTI") && reservation.seats().length >= 2
+                    && reservation.seats().length <= 4, "fallback still creates a valid multi request");
+            check(SeatManager.reserveMulti(3, reservation.seats()).result.equals("SUCCESS"), "fallback seats are distinct");
+            resp(client, "RESP 101 SUCCESS");
+            for (int reqId = 1; reqId <= SeatManager.SEAT_COUNT; reqId++) {
+                resp(client, "RESP " + reqId + " SUCCESS");
+            }
+            SeatManager.Snapshot snapshot = SeatManager.snapshot();
+            for (int seat = 1; seat <= SeatManager.SEAT_COUNT; seat++) {
+                check(client.held.contains(seat) == (snapshot.owners()[seat] == 3), "late cancels preserve exact final owners");
+            }
+            check(client.responded == 101 && client.pending.isEmpty() && client.cancelling.isEmpty()
+                    && client.reassignedDuringCancel.isEmpty(), "all delayed responses drain without stale state");
+
+            // 단일 예약과 후보가 1~3석만 남은 다중 예약도 멈추지 않는다.
+            for (int blocked = 97; blocked <= 100; blocked++) {
+                client.cancelling.clear();
+                for (int seat = 1; seat <= blocked; seat++) client.cancelling.add(seat);
+                runBounded(() -> {
+                    int[] seats = client.pickDistinctSeats(4);
+                    check(java.util.Arrays.stream(seats).distinct().count() == 4, "scarce candidates still produce four distinct seats");
+                    int single = client.pickSeat();
+                    check(single >= 1 && single <= 100, "single selection remains in range");
+                }, "seat selection returns with scarce candidates");
+            }
+        } finally {
+            client.log.close();
+        }
+    }
+
+    private static void nonBlockingPoolMonitor() throws Exception {
+        resetSeats();
+        Server.processed.set(0);
+        Server.deadlockCount.reset();
+        Server.requestQueue = new RequestQueue(1);
+        Server.requestQueue.offer(new RequestQueue.Request(null, 1, 1, "RESERVE", new int[]{42}), 1000);
+        Listener.nextPoolAt = 0;
+        Listener.lastProcessedSeen = 0;
+        Listener.lastProgressAt = System.currentTimeMillis();
+        Listener.stallReported = false;
+        SeatManager.seats[42].lock.lock();
+        try {
+            runBounded(Listener::tick, "POOL snapshot never blocks the Listener behind a seat lock");
+            check(Listener.nextPoolAt == 0, "unavailable snapshot stays scheduled for retry");
+            check(!SeatManager.seats[1].lock.isLocked(), "failed snapshot releases previously inspected seat locks");
+            Listener.lastProgressAt = System.currentTimeMillis() - (Server.deadlockSec + 1) * 1000L;
+            runBounded(Listener::tick, "stall monitor runs while a seat remains locked");
+            check(Server.deadlockCount.sum() == 1, "stalled queue is detected even when POOL snapshot cannot complete");
+            runBounded(Listener::tick, "repeated monitoring remains non-blocking");
+            check(Server.deadlockCount.sum() == 1, "one continuous stall is counted once");
+        } finally {
+            SeatManager.seats[42].lock.unlock();
+        }
+        Listener.tick();
+        check(Listener.nextPoolAt > System.currentTimeMillis(), "POOL snapshot resumes once the seat lock is released");
+        check(SeatManager.trySnapshot().reservedCount() == 0, "non-blocking snapshot contains current seat state");
+        Server.deadlockCount.reset();
+        Server.requestQueue.close();
+    }
+
+    private static void connectionTiming() throws Exception {
+        Listener.registeredIds.clear();
+        Listener.activeIds.clear();
+        Server.startNanos = 0;
+        try (SocketChannel firstChannel = SocketChannel.open(); SocketChannel secondChannel = SocketChannel.open()) {
+            Conn first = new Conn(firstChannel);
+            Thread.sleep(20);
+            Conn second = new Conn(secondChannel);
+            Listener.handleHello(second, new String[]{"HELLO", "2"});
+            check(Server.startNanos == second.connectedAtNanos, "throughput starts at connection time instead of HELLO time");
+            Listener.handleHello(first, new String[]{"HELLO", "1"});
+            check(Server.startNanos == first.connectedAtNanos, "out-of-order HELLO retains the earliest client connection");
+        } finally {
+            Server.startNanos = 0;
+        }
+    }
+
+    private static void runBounded(Runnable task, String message) throws Exception {
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread thread = new Thread(() -> {
+            try {
+                task.run();
+            } catch (Throwable e) {
+                failure.set(e);
+            }
+        }, "Regression-boundary");
+        thread.setDaemon(true);
+        thread.start();
+        thread.join(1500);
+        check(!thread.isAlive(), message);
+        if (failure.get() != null) throw new AssertionError(message, failure.get());
     }
 
     private static void failedResponse() throws Exception {
