@@ -36,6 +36,7 @@ public class Client implements Runnable {
     final Set<Integer> notifiedBeforeResponse = new HashSet<>();
     final TreeSet<Integer> held = new TreeSet<>();  // 내 좌석
     final Set<Integer> cancelling = new HashSet<>();  // 취소 응답 기다리는 좌석
+    final Set<Integer> reassignedDuringCancel = new HashSet<>();  // 취소 이후 새 배정을 받은 좌석
     int sent, responded, success, fail, waitlisted, notified, protocolErrors;
     long respNanosSum;
     boolean connectionEnded;
@@ -279,10 +280,12 @@ public class Client implements Runnable {
                     success++;
                     if (p.type().equals("CANCEL")) {
                         cancelling.remove(first);
-                        held.remove(first);
+                        if (!reassignedDuringCancel.remove(first)) {
+                            held.remove(first);
+                        }
                     } else {
                         for (int s : p.seats()) {
-                            held.add(s);
+                            recordAssignment(s);
                         }
                     }
                 }
@@ -296,6 +299,7 @@ public class Client implements Runnable {
                     fail++;
                     if (p.type().equals("CANCEL")) {
                         cancelling.remove(first);
+                        reassignedDuringCancel.remove(first);
                     }
                 }
             }
@@ -343,12 +347,20 @@ public class Client implements Runnable {
             if (waiting.remove(reqId) == null) {
                 notifiedBeforeResponse.add(reqId);
             }
-            held.add(seat);
+            recordAssignment(seat);
             notified++;
         } finally {
             lock.unlock();
         }
         log.write("NOTIFY", "SUCCESS", "req=" + reqId + " seat#" + seat + " assigned from waitlist.");
+    }
+
+    // Client lock 안에서 호출. 이전 CANCEL 응답보다 먼저 온 새 배정을 보존한다.
+    void recordAssignment(int seat) {
+        held.add(seat);
+        if (cancelling.contains(seat)) {
+            reassignedDuringCancel.add(seat);
+        }
     }
 
     void protocolError(String message) {
